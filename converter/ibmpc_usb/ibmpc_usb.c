@@ -139,12 +139,14 @@ uint8_t matrix_scan(void)
     if (ibmpc_error) {
         xprintf("err: %02X\n", ibmpc_error);
 
-/*
-        // keyboard init again
+        // when recv error, neither send error nor buffer full
         if (!(ibmpc_error & (IBMPC_ERR_SEND | IBMPC_ERR_FULL))) {
-            state = INIT;
+            // keyboard init again
+            if (state == LOOP) {
+                xprintf("init\n");
+                state = INIT;
+            }
         }
-*/
 
         // clear or process error
         ibmpc_error = IBMPC_ERR_NONE;
@@ -168,6 +170,10 @@ uint8_t matrix_scan(void)
             break;
         case READ_ID:
             keyboard_id = read_keyboard_id();
+            if (ibmpc_error) {
+                xprintf("err: %02X\n", ibmpc_error);
+                ibmpc_error = IBMPC_ERR_NONE;
+            }
             xprintf("ID: %04X\n", keyboard_id);
             if (0xAB00 == (keyboard_id & 0xFF00)) {
                 // CodeSet2 PS/2
