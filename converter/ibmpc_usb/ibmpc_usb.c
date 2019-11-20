@@ -120,38 +120,42 @@ void matrix_init(void)
  *      d. ID is BF BF: Terminal keyboard CodeSet3
  *      e. error on recv: maybe broken PS/2
  */
+static enum { NONE, PC_XT, PC_AT, PC_TERMINAL, OTHER } keyboard_kind = NONE;
+static uint16_t keyboard_id = 0x0000;
 uint8_t matrix_scan(void)
 {
-
     // scan code reading states
     static enum {
         INIT,
         WAIT_STARTUP,
         READ_ID,
+        LED_SET,
         LOOP,
         END
     } state = INIT;
-
+    static uint16_t last_time;
 
  
     if (ibmpc_error) {
         xprintf("err: %02X\n", ibmpc_error);
+
+/*
+        // keyboard init again
+        if (!(ibmpc_error & (IBMPC_ERR_SEND | IBMPC_ERR_FULL))) {
+            state = INIT;
+        }
+*/
+
         // clear or process error
         ibmpc_error = IBMPC_ERR_NONE;
     }
 
-    static enum {
-        NONE,
-        PC_XT,
-        PC_AT,
-        PC_TERMINAL,
-        OTHER,
-    } keyboard_kind = NONE;
-    static uint16_t last_time;
-    static uint16_t keyboard_id;
     int16_t code;
     switch (state) {
         case INIT:
+            ibmpc_protocol = IBMPC_PROTOCOL_AT;
+            keyboard_kind = NONE;
+            keyboard_id = 0x0000;
             last_time = timer_read();
             state = WAIT_STARTUP;
             break;
@@ -190,12 +194,23 @@ uint8_t matrix_scan(void)
 
             // protocol
             if (keyboard_kind == PC_XT) {
+                xprintf("kbd: XT\n");
                 ibmpc_protocol = IBMPC_PROTOCOL_XT;
+            } else if (keyboard_kind == PC_AT) {
+                xprintf("kbd: AT\n");
+                ibmpc_protocol = IBMPC_PROTOCOL_AT;
+            } else if (keyboard_kind == PC_TERMINAL) {
+                xprintf("kbd: Terminal\n");
+                ibmpc_protocol = IBMPC_PROTOCOL_AT;
             } else {
+                xprintf("kbd: Unknown\n");
                 ibmpc_protocol = IBMPC_PROTOCOL_AT;
             }
-            state = LOOP;
+            state = LED_SET;
             break;
+        case LED_SET:
+            led_set(host_keyboard_leds());
+            state = LOOP;
         case LOOP:
             code = ibmpc_host_recv();
             switch (code) {
@@ -259,7 +274,8 @@ void matrix_clear(void)
 
 void led_set(uint8_t usb_led)
 {
-/*
+    if (keyboard_kind != PC_AT) return;
+
     uint8_t ibmpc_led = 0;
     if (usb_led &  (1<<USB_LED_SCROLL_LOCK))
         ibmpc_led |= (1<<IBMPC_LED_SCROLL_LOCK);
@@ -268,5 +284,4 @@ void led_set(uint8_t usb_led)
     if (usb_led &  (1<<USB_LED_CAPS_LOCK))
         ibmpc_led |= (1<<IBMPC_LED_CAPS_LOCK);
     ibmpc_host_set_led(ibmpc_led);
-*/
 }
