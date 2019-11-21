@@ -53,6 +53,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define IBMPC_DATA_PIN    PIND
 #define IBMPC_DATA_DDR    DDRD
 #define IBMPC_DATA_BIT    0
+#define IBMPC_RST_PORT    PORTB
+#define IBMPC_RST_PIN     PINB
+#define IBMPC_RST_DDR     DDRB
+#define IBMPC_RST_BIT     7
+
+/* reset for XT keyboard: low pulse for 500ms and after that HiZ for safety */
+#define IBMPC_RESET() do { \
+    IBMPC_RST_PORT &= ~(1<<IBMPC_RST_BIT);  \
+    IBMPC_RST_DDR  |=  (1<<IBMPC_RST_BIT);  \
+    _delay_ms(500);                   \
+    IBMPC_RST_DDR  &= ~(1<<IBMPC_RST_BIT);  \
+} while (0)
 
 #define IBMPC_INT_INIT()  do {  \
     EICRA |= ((1<<ISC11) |      \

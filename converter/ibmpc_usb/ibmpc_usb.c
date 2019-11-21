@@ -104,6 +104,9 @@ void matrix_init(void)
     debug_enable = true;
     ibmpc_host_init();
 
+    // hard reset for XT keyboard
+    IBMPC_RESET();
+
     // initialize matrix state: all keys off
     for (uint8_t i=0; i < MATRIX_ROWS; i++) matrix[i] = 0x00;
 
