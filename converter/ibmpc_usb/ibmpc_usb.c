@@ -152,7 +152,6 @@ uint8_t matrix_scan(void)
         ibmpc_error = IBMPC_ERR_NONE;
     }
 
-    int16_t code;
     switch (state) {
         case INIT:
             ibmpc_protocol = IBMPC_PROTOCOL_AT;
@@ -164,7 +163,7 @@ uint8_t matrix_scan(void)
             break;
         case WAIT_STARTUP:
             // read and ignore BAT code and other codes when power-up
-            code = ibmpc_host_recv();
+            ibmpc_host_recv();
             if (timer_elapsed(last_time) > 1000) {
                 state = READ_ID;
             }
@@ -393,22 +392,14 @@ int8_t process_cs2(void)
         // Pause
         E1,
         E1_14,
-        E1_14_77,
-        E1_14_77_E1,
-        E1_14_77_E1_F0,
-        E1_14_77_E1_F0_14,
-        E1_14_77_E1_F0_14_F0,
+        E1_F0,
+        E1_F0_14,
+        E1_F0_14_F0,
         // Control'd Pause
         E0_7E,
         E0_7E_E0,
         E0_7E_E0_F0,
     } state = INIT;
-
-    // NOTE: devide Pause into E1_14_77(make) and E1_F0_14_F0_77(break)?
-    // 'pseudo break code' hack
-    if (matrix_is_on(ROW(PAUSE), COL(PAUSE))) {
-        matrix_break(PAUSE);
-    }
 
     uint16_t code = ibmpc_host_recv();
     if (code == -1) {
@@ -519,62 +510,20 @@ int8_t process_cs2(void)
                     state = INIT;
             }
             break;
-        // following are states of Pause
+        // States of Pause
         case E1:
             switch (code) {
                 case 0x14:
                     state = E1_14;
+                    break;
+                case 0xF0:
+                    state = E1_F0;
                     break;
                 default:
                     state = INIT;
             }
             break;
         case E1_14:
-            switch (code) {
-                case 0x77:
-                    state = E1_14_77;
-                    break;
-                default:
-                    state = INIT;
-            }
-            break;
-        case E1_14_77:
-            switch (code) {
-                case 0xE1:
-                    state = E1_14_77_E1;
-                    break;
-                default:
-                    state = INIT;
-            }
-            break;
-        case E1_14_77_E1:
-            switch (code) {
-                case 0xF0:
-                    state = E1_14_77_E1_F0;
-                    break;
-                default:
-                    state = INIT;
-            }
-            break;
-        case E1_14_77_E1_F0:
-            switch (code) {
-                case 0x14:
-                    state = E1_14_77_E1_F0_14;
-                    break;
-                default:
-                    state = INIT;
-            }
-            break;
-        case E1_14_77_E1_F0_14:
-            switch (code) {
-                case 0xF0:
-                    state = E1_14_77_E1_F0_14_F0;
-                    break;
-                default:
-                    state = INIT;
-            }
-            break;
-        case E1_14_77_E1_F0_14_F0:
             switch (code) {
                 case 0x77:
                     matrix_make(PAUSE);
@@ -584,7 +533,35 @@ int8_t process_cs2(void)
                     state = INIT;
             }
             break;
-        // Following are states of Control'd Pause
+        case E1_F0:
+            switch (code) {
+                case 0x14:
+                    state = E1_F0_14;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_F0_14:
+            switch (code) {
+                case 0xF0:
+                    state = E1_F0_14_F0;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_F0_14_F0:
+            switch (code) {
+                case 0x77:
+                    matrix_break(PAUSE);
+                    state = INIT;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        // States of Control'd Pause
         case E0_7E:
             if (code == 0xE0)
                 state = E0_7E_E0;
