@@ -31,6 +31,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 static void matrix_make(uint8_t code);
 static void matrix_break(uint8_t code);
 
+int8_t process_cs2(void);
+
 
 /*
  * Matrix Array usage:
@@ -59,11 +61,6 @@ static void matrix_break(uint8_t code);
 static uint8_t matrix[MATRIX_ROWS];
 #define ROW(code)      (code>>3)
 #define COL(code)      (code&0x07)
-
-// matrix positions for exceptional keys
-#define F7             (0x83)
-#define PRINT_SCREEN   (0xFC)
-#define PAUSE          (0xFE)
 
 static int16_t read_wait(uint16_t wait_ms)
 {
@@ -163,6 +160,7 @@ uint8_t matrix_scan(void)
             keyboard_id = 0x0000;
             last_time = timer_read();
             state = WAIT_STARTUP;
+            matrix_clear();
             break;
         case WAIT_STARTUP:
             // read and ignore BAT code and other codes when power-up
@@ -221,20 +219,21 @@ uint8_t matrix_scan(void)
             led_set(host_keyboard_leds());
             state = LOOP;
         case LOOP:
-            code = ibmpc_host_recv();
-            switch (code) {
-                case 0xAA:  // BAT OK
-                case 0xFC:  // BAT FAIL
-                    // new keyboard plug-in
-                    state = INIT;
+            switch (keyboard_kind) {
+                case PC_AT:
+                    process_cs2();
+                    break;
+                case PC_XT:
+                    break;
+                case PC_TERMINAL:
+                    break;
+                default:
                     break;
             }
             break;
         default:
             break;
     }
-
-
     return 1;
 }
 
@@ -293,4 +292,318 @@ void led_set(uint8_t usb_led)
     if (usb_led &  (1<<USB_LED_CAPS_LOCK))
         ibmpc_led |= (1<<IBMPC_LED_CAPS_LOCK);
     ibmpc_host_set_led(ibmpc_led);
+}
+
+
+/*
+ * PS/2 Scan Code Set 2: Exceptional Handling
+ *
+ * There are several keys to be handled exceptionally.
+ * The scan code for these keys are varied or prefix/postfix'd
+ * depending on modifier key state.
+ *
+ * Keyboard Scan Code Specification:
+ *     http://www.microsoft.com/whdc/archive/scancode.mspx
+ *     http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
+ *
+ *
+ * 1) Insert, Delete, Home, End, PageUp, PageDown, Up, Down, Right, Left
+ *     a) when Num Lock is off
+ *     modifiers | make                      | break
+ *     ----------+---------------------------+----------------------
+ *     Ohter     |                    <make> | <break>
+ *     LShift    | E0 F0 12           <make> | <break>  E0 12
+ *     RShift    | E0 F0 59           <make> | <break>  E0 59
+ *     L+RShift  | E0 F0 12  E0 F0 59 <make> | <break>  E0 59 E0 12
+ *
+ *     b) when Num Lock is on
+ *     modifiers | make                      | break
+ *     ----------+---------------------------+----------------------
+ *     Other     | E0 12              <make> | <break>  E0 F0 12
+ *     Shift'd   |                    <make> | <break>
+ *
+ *     Handling: These prefix/postfix codes are ignored.
+ *
+ *
+ * 2) Keypad /
+ *     modifiers | make                      | break
+ *     ----------+---------------------------+----------------------
+ *     Ohter     |                    <make> | <break>
+ *     LShift    | E0 F0 12           <make> | <break>  E0 12
+ *     RShift    | E0 F0 59           <make> | <break>  E0 59
+ *     L+RShift  | E0 F0 12  E0 F0 59 <make> | <break>  E0 59 E0 12
+ *
+ *     Handling: These prefix/postfix codes are ignored.
+ *
+ *
+ * 3) PrintScreen
+ *     modifiers | make         | break
+ *     ----------+--------------+-----------------------------------
+ *     Other     | E0 12  E0 7C | E0 F0 7C  E0 F0 12
+ *     Shift'd   |        E0 7C | E0 F0 7C
+ *     Control'd |        E0 7C | E0 F0 7C
+ *     Alt'd     |           84 | F0 84
+ *
+ *     Handling: These prefix/postfix codes are ignored, and both scan codes
+ *               'E0 7C' and 84 are seen as PrintScreen.
+ *
+ * 4) Pause
+ *     modifiers | make(no break code)
+ *     ----------+--------------------------------------------------
+ *     Other     | E1 14 77 E1 F0 14 F0 77
+ *     Control'd | E0 7E E0 F0 7E
+ *
+ *     Handling: Both code sequences are treated as a whole.
+ *               And we need a ad hoc 'pseudo break code' hack to get the key off
+ *               because it has no break code.
+ *
+ * PS/2 Resources
+ * --------------
+ * [1] The PS/2 Mouse/Keyboard Protocol
+ * http://www.computer-engineering.org/ps2protocol/
+ * Concise and thorough primer of PS/2 protocol.
+ *
+ * [2] Keyboard and Auxiliary Device Controller
+ * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+ * Signal Timing and Format
+ *
+ * [3] Keyboards(101- and 102-key)
+ * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ * Keyboard Layout, Scan Code Set, POR, and Commands.
+ *
+ * [4] PS/2 Reference Manuals
+ * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+ * Collection of IBM Personal System/2 documents.
+ *
+ * [5] TrackPoint Engineering Specifications for version 3E
+ * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html
+ */
+// matrix positions for exceptional keys
+#define F7             (0x83)
+#define PRINT_SCREEN   (0xFC)
+#define PAUSE          (0xFE)
+int8_t process_cs2(void)
+{
+    // scan code reading states
+    static enum {
+        INIT,
+        F0,
+        E0,
+        E0_F0,
+        // Pause
+        E1,
+        E1_14,
+        E1_14_77,
+        E1_14_77_E1,
+        E1_14_77_E1_F0,
+        E1_14_77_E1_F0_14,
+        E1_14_77_E1_F0_14_F0,
+        // Control'd Pause
+        E0_7E,
+        E0_7E_E0,
+        E0_7E_E0_F0,
+    } state = INIT;
+
+    // NOTE: devide Pause into E1_14_77(make) and E1_F0_14_F0_77(break)?
+    // 'pseudo break code' hack
+    if (matrix_is_on(ROW(PAUSE), COL(PAUSE))) {
+        matrix_break(PAUSE);
+    }
+
+    uint16_t code = ibmpc_host_recv();
+    if (code == -1) {
+        return 0;
+    }
+
+    switch (state) {
+        case INIT:
+            switch (code) {
+                case 0xE0:
+                    state = E0;
+                    break;
+                case 0xF0:
+                    state = F0;
+                    break;
+                case 0xE1:
+                    state = E1;
+                    break;
+                case 0x83:  // F7
+                    matrix_make(F7);
+                    state = INIT;
+                    break;
+                case 0x84:  // Alt'd PrintScreen
+                    matrix_make(PRINT_SCREEN);
+                    state = INIT;
+                    break;
+                case 0x00:  // Overrun [3]p.26
+                    matrix_clear();
+                    clear_keyboard();
+                    xprintf("!CS2_OVERRUN!\n");
+                    state = INIT;
+                    break;
+                case 0xAA:  // Self-test passed
+                case 0xFC:  // Self-test failed
+                    // reset or plugin-in new keyboard
+                    state = INIT;
+                    return -1;
+                    break;
+                default:    // normal key make
+                    if (code < 0x80) {
+                        matrix_make(code);
+                    } else {
+                        matrix_clear();
+                        clear_keyboard();
+                        xprintf("!CS2_INIT!\n");
+                    }
+                    state = INIT;
+            }
+            break;
+        case E0:    // E0-Prefixed
+            switch (code) {
+                case 0x12:  // to be ignored
+                case 0x59:  // to be ignored
+                    state = INIT;
+                    break;
+                case 0x7E:  // Control'd Pause
+                    state = E0_7E;
+                    break;
+                case 0xF0:
+                    state = E0_F0;
+                    break;
+                default:
+                    if (code < 0x80) {
+                        matrix_make(code|0x80);
+                    } else {
+                        matrix_clear();
+                        clear_keyboard();
+                        xprintf("!CS2_E0!\n");
+                    }
+                    state = INIT;
+            }
+            break;
+        case F0:    // Break code
+            switch (code) {
+                case 0x83:  // F7
+                    matrix_break(F7);
+                    state = INIT;
+                    break;
+                case 0x84:  // Alt'd PrintScreen
+                    matrix_break(PRINT_SCREEN);
+                    state = INIT;
+                    break;
+                default:
+                    if (code < 0x80) {
+                        matrix_break(code);
+                    } else {
+                        matrix_clear();
+                        clear_keyboard();
+                        xprintf("!CS2_F0!\n");
+                    }
+                    state = INIT;
+            }
+            break;
+        case E0_F0: // Break code of E0-prefixed
+            switch (code) {
+                case 0x12:  // to be ignored
+                case 0x59:  // to be ignored
+                    state = INIT;
+                    break;
+                default:
+                    if (code < 0x80) {
+                        matrix_break(code|0x80);
+                    } else {
+                        matrix_clear();
+                        clear_keyboard();
+                        xprintf("!CS2_E0_F0!\n");
+                    }
+                    state = INIT;
+            }
+            break;
+        // following are states of Pause
+        case E1:
+            switch (code) {
+                case 0x14:
+                    state = E1_14;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14:
+            switch (code) {
+                case 0x77:
+                    state = E1_14_77;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14_77:
+            switch (code) {
+                case 0xE1:
+                    state = E1_14_77_E1;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14_77_E1:
+            switch (code) {
+                case 0xF0:
+                    state = E1_14_77_E1_F0;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14_77_E1_F0:
+            switch (code) {
+                case 0x14:
+                    state = E1_14_77_E1_F0_14;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14_77_E1_F0_14:
+            switch (code) {
+                case 0xF0:
+                    state = E1_14_77_E1_F0_14_F0;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        case E1_14_77_E1_F0_14_F0:
+            switch (code) {
+                case 0x77:
+                    matrix_make(PAUSE);
+                    state = INIT;
+                    break;
+                default:
+                    state = INIT;
+            }
+            break;
+        // Following are states of Control'd Pause
+        case E0_7E:
+            if (code == 0xE0)
+                state = E0_7E_E0;
+            else
+                state = INIT;
+            break;
+        case E0_7E_E0:
+            if (code == 0xF0)
+                state = E0_7E_E0_F0;
+            else
+                state = INIT;
+            break;
+        case E0_7E_E0_F0:
+            if (code == 0x7E)
+                matrix_make(PAUSE);
+            state = INIT;
+            break;
+        default:
+            state = INIT;
+    }
+    return 0;
 }
