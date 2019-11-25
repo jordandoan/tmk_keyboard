@@ -12,24 +12,6 @@ SRC ?=	protocol/ibmpc.c \
 	ibmpc_pin.c \
 	ibmpc_usb.c
 
-#
-# Keymap file
-#
-ifdef UNIMAP_ENABLE
-    KEYMAP_FILE = unimap
-else
-    ifdef ACTIONMAP_ENABLE
-	KEYMAP_FILE = actionmap
-    else
-	KEYMAP_FILE = keymap
-    endif
-endif
-ifdef KEYMAP
-    SRC := $(KEYMAP_FILE)_$(KEYMAP).c $(SRC)
-else
-    SRC := $(KEYMAP_FILE)_plain.c $(SRC)
-endif
-
 CONFIG_H ?= config.h
 
 
@@ -96,9 +78,32 @@ CONSOLE_ENABLE ?= yes	# Console for debug(+400)
 COMMAND_ENABLE ?= yes    # Commands for debug and configuration
 NKRO_ENABLE ?= yes	# USB Nkey Rollover
 
+KEYMAP_SECTION_ENABLE = yes
+UNIMAP_ENABLE = yes
+
 
 # Optimize size but this may cause error "relocation truncated to fit"
 #EXTRALDFLAGS = -Wl,--relax
+
+
+#
+# Keymap file
+#
+ifdef UNIMAP_ENABLE
+    KEYMAP_FILE = unimap
+else
+    ifdef ACTIONMAP_ENABLE
+	KEYMAP_FILE = actionmap
+    else
+	KEYMAP_FILE = keymap
+    endif
+endif
+ifdef KEYMAP
+    SRC := $(KEYMAP_FILE)_$(KEYMAP).c $(SRC)
+else
+    SRC := $(KEYMAP_FILE)_plain.c $(SRC)
+endif
+
 
 # Search Path
 VPATH += $(TARGET_DIR)

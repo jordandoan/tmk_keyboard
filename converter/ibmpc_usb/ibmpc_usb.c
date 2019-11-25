@@ -26,12 +26,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "led.h"
 #include "matrix.h"
 #include "timer.h"
+#include "ibmpc_usb.h"
 
 
 static void matrix_make(uint8_t code);
 static void matrix_break(uint8_t code);
 
+int8_t process_cs1(void);
 int8_t process_cs2(void);
+int8_t process_cs3(void);
 
 
 /*
@@ -120,8 +123,8 @@ void matrix_init(void)
  *      d. ID is BF BF: Terminal keyboard CodeSet3
  *      e. error on recv: maybe broken PS/2
  */
-static enum { NONE, PC_XT, PC_AT, PC_TERMINAL, OTHER } keyboard_kind = NONE;
-static uint16_t keyboard_id = 0x0000;
+uint16_t keyboard_id = 0x0000;
+keyboard_kind_t keyboard_kind = NONE;
 uint8_t matrix_scan(void)
 {
     // scan code reading states
@@ -208,6 +211,8 @@ uint8_t matrix_scan(void)
             } else if (keyboard_kind == PC_TERMINAL) {
                 xprintf("kbd: Terminal\n");
                 ibmpc_protocol = IBMPC_PROTOCOL_AT;
+                // Set all keys - make/break [3]p.23
+                ibmpc_host_send(0xF8);
             } else {
                 xprintf("kbd: Unknown\n");
                 ibmpc_protocol = IBMPC_PROTOCOL_AT;
@@ -219,12 +224,14 @@ uint8_t matrix_scan(void)
             state = LOOP;
         case LOOP:
             switch (keyboard_kind) {
+                case PC_XT:
+                    process_cs1();
+                    break;
                 case PC_AT:
                     process_cs2();
                     break;
-                case PC_XT:
-                    break;
                 case PC_TERMINAL:
+                    process_cs3();
                     break;
                 default:
                     break;
@@ -294,17 +301,167 @@ void led_set(uint8_t usb_led)
 }
 
 
-/*
- * PS/2 Scan Code Set 2: Exceptional Handling
+/*******************************************************************************
+ * XT: Scan Code Set 1
  *
+ * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ * https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol
+ */
+// convert E0-escaped codes into unused area
+static uint8_t cs1_e0code(uint8_t code) {
+    switch(code) {
+        // Original IBM XT keyboard doesn't use E0-codes probably
+        // Some XT compatilble keyobards need these keys?
+        // http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/translate.pdf
+        // https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
+        case 0x37: return 0x54; // Print Screen
+        case 0x46: return 0x55; // Ctrl + Pause
+        case 0x1C: return 0x6F; // Keypad Enter
+        case 0x35: return 0x7F; // Keypad /
+        case 0x5B: return 0x5A; // Left  GUI
+        case 0x5C: return 0x5B; // Right GUI
+        case 0x5D: return 0x5C; // Application
+        case 0x5E: return 0x5D; // Power(not used)
+        case 0x5F: return 0x5E; // Sleep(not used)
+        case 0x63: return 0x5F; // Wake (not used)
+        case 0x48: return 0x60; // Up
+        case 0x4B: return 0x61; // Left
+        case 0x50: return 0x62; // Down
+        case 0x4D: return 0x63; // Right
+        case 0x52: return 0x71; // Insert
+        case 0x53: return 0x72; // Delete
+        case 0x47: return 0x74; // Home
+        case 0x4F: return 0x75; // End
+        case 0x49: return 0x77; // Page Up
+        case 0x51: return 0x78; // Page Down
+        case 0x1D: return 0x7A; // Right Ctrl
+        case 0x38: return 0x7C; // Right Alt
+    }
+    return 0x00;
+}
+
+int8_t process_cs1(void)
+{
+    static enum {
+        INIT,
+        E0,
+        // Pause: E1 1D 45, E1 9D C5
+        E1,
+        E1_1D,
+        E1_9D,
+    } state = INIT;
+
+    uint16_t code = ibmpc_host_recv();
+    if (code == -1) {
+        return 0;
+    }
+
+    switch (state) {
+        case INIT:
+            switch (code) {
+                case 0xE0:
+                    state = E0;
+                    break;
+                case 0xE1:
+                    state = E1;
+                    break;
+                default:
+                    if (code < 0x80)
+                        matrix_make(code);
+                    else
+                        matrix_break(code & 0x7F);
+                    break;
+            }
+            break;
+        case E0:
+            switch (code) {
+                case 0x2A:
+                case 0xAA:
+                case 0x36:
+                case 0xB6:
+                    //ignore fake shift
+                    state = INIT;
+                    break;
+                default:
+                    if (code < 0x80)
+                        matrix_make(cs1_e0code(code));
+                    else
+                        matrix_break(cs1_e0code(code & 0x7F));
+                    state = INIT;
+                    break;
+            }
+            break;
+        case E1:
+            switch (code) {
+                case 0x1D:
+                    state = E1_1D;
+                    break;
+                case 0x9D:
+                    state = E1_9D;
+                    break;
+                default:
+                    state = INIT;
+                    break;
+            }
+            break;
+        case E1_1D:
+            switch (code) {
+                case 0x45:
+                    matrix_make(0x55);
+                    break;
+                default:
+                    state = INIT;
+                    break;
+            }
+            break;
+        case E1_9D:
+            switch (code) {
+                case 0x45:
+                    matrix_break(0x55);
+                    break;
+                default:
+                    state = INIT;
+                    break;
+            }
+            break;
+        default:
+            state = INIT;
+    }
+    return 0;
+}
+
+/*******************************************************************************
+ * AT, PS/2: Scan Code Set 2
+ * 
+ * Microsoft USB HID to PS/2 Translation Table
+ * https://web.archive.org/web/20090206085854/http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/translate.pdf
+ *
+ * Microsoft Keyboard Scan Code Specification
+ * https://web.archive.org/web/20090204033444/http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
+ *
+ * [1] The PS/2 Mouse/Keyboard Protocol
+ * http://www.computer-engineering.org/ps2protocol/
+ * Concise and thorough primer of PS/2 protocol.
+ *
+ * [2] Keyboard and Auxiliary Device Controller
+ * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+ * Signal Timing and Format
+ *
+ * [3] Keyboards(101- and 102-key)
+ * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ * Keyboard Layout, Scan Code Set, POR, and Commands.
+ *
+ * [4] PS/2 Reference Manuals
+ * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+ * Collection of IBM Personal System/2 documents.
+ *
+ * [5] TrackPoint Engineering Specifications for version 3E
+ * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html
+ *
+ * Exceptional Handling
+ * --------------------
  * There are several keys to be handled exceptionally.
- * The scan code for these keys are varied or prefix/postfix'd
- * depending on modifier key state.
- *
- * Keyboard Scan Code Specification:
- *     http://www.microsoft.com/whdc/archive/scancode.mspx
- *     http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
- *
+ * The scan code for these keys are varied or prefix/postfix'd depending on modifier key state.
  *
  * 1) Insert, Delete, Home, End, PageUp, PageDown, Up, Down, Right, Left
  *     a) when Num Lock is off
@@ -356,29 +513,9 @@ void led_set(uint8_t usb_led)
  *               And we need a ad hoc 'pseudo break code' hack to get the key off
  *               because it has no break code.
  *
- * PS/2 Resources
- * --------------
- * [1] The PS/2 Mouse/Keyboard Protocol
- * http://www.computer-engineering.org/ps2protocol/
- * Concise and thorough primer of PS/2 protocol.
- *
- * [2] Keyboard and Auxiliary Device Controller
- * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
- * Signal Timing and Format
- *
- * [3] Keyboards(101- and 102-key)
- * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
- * Keyboard Layout, Scan Code Set, POR, and Commands.
- *
- * [4] PS/2 Reference Manuals
- * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
- * Collection of IBM Personal System/2 documents.
- *
- * [5] TrackPoint Engineering Specifications for version 3E
- * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html
  */
 // matrix positions for exceptional keys
-#define F7             (0x83)
+#define F7             (0x02)
 #define PRINT_SCREEN   (0xFC)
 #define PAUSE          (0xFE)
 int8_t process_cs2(void)
@@ -581,6 +718,77 @@ int8_t process_cs2(void)
             break;
         default:
             state = INIT;
+    }
+    return 0;
+}
+
+/*
+ * Terminal: Scan Code Set 3
+ *
+ * https://www.seasip.info/VintagePC/ibm_1397000.html
+ * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ */
+int8_t process_cs3(void)
+{
+    static enum {
+        READY,
+        F0,
+    } state = READY;
+
+    uint16_t code = ibmpc_host_recv();
+    if (code == -1) {
+        return 0;
+    }
+
+    switch (state) {
+        case READY:
+            switch (code) {
+                case 0x00:
+                case 0xff:
+                    xprintf("!CS3_%02X!\n", code);
+                    break;
+                case 0xF0:
+                    state = F0;
+                    break;
+                case 0x83:  // F7
+                    matrix_make(F7);
+                    break;
+                case 0x84:  // keypad -
+                    matrix_make(0x7B); // cs2: keypad -
+                    break;
+                default:    // normal key make
+                    if (code < 0x80) {
+                        matrix_make(code);
+                    } else {
+                        xprintf("!CS3_%02X!\n", code);
+                    }
+                    state = READY;
+            }
+            break;
+        case F0:    // Break code
+            switch (code) {
+                case 0x00:
+                case 0xff:
+                    xprintf("!CS3_F0_%02X!\n", code);
+                    state = READY;
+                    break;
+                case 0x83:  // F7
+                    matrix_break(F7);
+                    state = READY;
+                    break;
+                case 0x84:  // keypad -
+                    matrix_break(0x7B); // cs2: keypad -
+                    state = READY;
+                    break;
+                default:
+                    if (code < 0x80) {
+                        matrix_break(code);
+                    } else {
+                        xprintf("!CS3_F0_%02X!\n", code);
+                    }
+                    state = READY;
+            }
+            break;
     }
     return 0;
 }
