@@ -17,7 +17,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "action.h"
 #include "print.h"
 #include "util.h"
 #include "debug.h"
@@ -32,35 +31,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 static void matrix_make(uint8_t code);
 static void matrix_break(uint8_t code);
 
-int8_t process_cs1(void);
-int8_t process_cs2(void);
-int8_t process_cs3(void);
+static int8_t process_cs1(void);
+static int8_t process_cs2(void);
+static int8_t process_cs3(void);
 
 
-/*
- * Matrix Array usage:
- * 'Scan Code Set 2' is assigned into 256(32x8)cell matrix.
- * Hmm, it is very sparse and not efficient :(
- *
- * Notes:
- * Both 'Hanguel/English'(F1) and 'Hanja'(F2) collide with 'Delete'(E0 71) and 'Down'(E0 72).
- * These two Korean keys need exceptional handling and are not supported for now. Sorry.
- *
- *    8bit wide
- *   +---------+
- *  0|         |
- *  :|   XX    | 00-7F for normal codes(without E0-prefix)
- *  f|_________|
- * 10|         |
- *  :|  E0 YY  | 80-FF for E0-prefixed codes
- * 1f|         |     (<YY>|0x80) is used as matrix position.
- *   +---------+
- *
- * Exceptions:
- * 0x83:    F7(0x83) This is a normal code but beyond  0x7F.
- * 0xFC:    PrintScreen
- * 0xFE:    Pause
- */
 static uint8_t matrix[MATRIX_ROWS];
 #define ROW(code)      (code>>3)
 #define COL(code)      (code&0x07)
@@ -85,7 +60,7 @@ static uint16_t read_keyboard_id(void)
     code = ibmpc_host_send(0xF2);
     if (code == -1)  return 0xFFFF;     // XT or No keyboard
     if (code != 0xFA) return 0xFFFE;    // Broken PS/2?
-    
+
     code = read_wait(1000);
     if (code == -1)  return 0x0000;     // AT
     id = (code & 0xFF)<<8;
@@ -138,7 +113,7 @@ uint8_t matrix_scan(void)
     } state = INIT;
     static uint16_t last_time;
 
- 
+
     if (ibmpc_error) {
         xprintf("err: %02X\n", ibmpc_error);
 
@@ -304,30 +279,59 @@ void led_set(uint8_t usb_led)
 /*******************************************************************************
  * XT: Scan Code Set 1
  *
- * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
- * https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol
+ * See [3], [a]
+ *
+ * E0-escaped scan codes are translated into unused area of the matrix.(54-7F)
+ *
+ *     01-53: Normal codes used in original XT keyboard
+ *     54-7F: Not used in original XT keyboard
+ *
+ *         0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+ *     50  -   -   -   -   *   *   x   x   x   x   *   *   *   o   o   o
+ *     60  *   *   *   *   x   x   x   x   x   x   x   x   x   x   x   *
+ *     70  x   *   *   x   *   *   x   *   *   x   *   x   *   x   x   *
+ *
+ * -: codes existed in original XT keyboard
+ * *: E0-escaped codes converted into unused code area(internal use in TMK)
+ * x: Non-espcaped codes(not used in real keyboards probably, for CodeSet2-CodeSet1 translation purpose)
+ * o: reserved
+ *
+ * Usage in TMK:
+ *
+ *     50  -                60  Up*                 70  KANAx
+ *     51  -                61  Left*               71  Insert*
+ *     52  -                62  Down*               72  Delete*
+ *     53  -                63  Right*              73  ROx
+ *     54  PrintScr*        64  F13x                74  Home*
+ *     55  Pause*           65  F14x                75  End*
+ *     56  Euro2x           66  F15x                76  F24x
+ *     57  F11x             67  F16x                77  PageUp*
+ *     58  F12x             68  F17x                78  PageDown*
+ *     59  Keypad=x         69  F18x                79  HENKANx
+ *     5A  LGUI*            6A  F19x                7A  RCTL*
+ *     5B  RGUI*            6B  F20x                7B  MUHENKANx
+ *     5C  APP*             6C  F21x                7C  RALT*
+ *     5D  Mute*            6D  F22x                7D  JPYx
+ *     5E  Volume Down*     6E  F23x                7E  Keypad,x
+ *     5F  Volume Up*       6F  Keypad Enter*       7F  Keypad/ *
  */
-// convert E0-escaped codes into unused area
 static uint8_t cs1_e0code(uint8_t code) {
     switch(code) {
         // Original IBM XT keyboard doesn't use E0-codes probably
         // Some XT compatilble keyobards need these keys?
-        // http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/translate.pdf
-        // https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
         case 0x37: return 0x54; // Print Screen
         case 0x46: return 0x55; // Ctrl + Pause
-        case 0x1C: return 0x6F; // Keypad Enter
-        case 0x35: return 0x7F; // Keypad /
         case 0x5B: return 0x5A; // Left  GUI
         case 0x5C: return 0x5B; // Right GUI
         case 0x5D: return 0x5C; // Application
-        case 0x5E: return 0x5D; // Power(not used)
-        case 0x5F: return 0x5E; // Sleep(not used)
-        case 0x63: return 0x5F; // Wake (not used)
+        case 0x20: return 0x5D; // Mute
+        case 0x2E: return 0x5E; // Volume Down
+        case 0x30: return 0x5F; // Volume Up
         case 0x48: return 0x60; // Up
         case 0x4B: return 0x61; // Left
         case 0x50: return 0x62; // Down
         case 0x4D: return 0x63; // Right
+        case 0x1C: return 0x6F; // Keypad Enter
         case 0x52: return 0x71; // Insert
         case 0x53: return 0x72; // Delete
         case 0x47: return 0x74; // Home
@@ -336,11 +340,21 @@ static uint8_t cs1_e0code(uint8_t code) {
         case 0x51: return 0x78; // Page Down
         case 0x1D: return 0x7A; // Right Ctrl
         case 0x38: return 0x7C; // Right Alt
+        case 0x35: return 0x7F; // Keypad /
+
+        // Shared matrix cell with other keys
+        case 0x5E: return 0x70; // Power (KANA)
+        case 0x5F: return 0x79; // Sleep (HENKAN)
+        case 0x63: return 0x7B; // Wake  (MUHENKAN)
+
+        default:
+           xprintf("!CS1_?!\n");
+           return code;
     }
     return 0x00;
 }
 
-int8_t process_cs1(void)
+static int8_t process_cs1(void)
 {
     static enum {
         INIT,
@@ -432,36 +446,12 @@ int8_t process_cs1(void)
 
 /*******************************************************************************
  * AT, PS/2: Scan Code Set 2
- * 
- * Microsoft USB HID to PS/2 Translation Table
- * https://web.archive.org/web/20090206085854/http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/translate.pdf
- *
- * Microsoft Keyboard Scan Code Specification
- * https://web.archive.org/web/20090204033444/http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
- *
- * [1] The PS/2 Mouse/Keyboard Protocol
- * http://www.computer-engineering.org/ps2protocol/
- * Concise and thorough primer of PS/2 protocol.
- *
- * [2] Keyboard and Auxiliary Device Controller
- * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
- * Signal Timing and Format
- *
- * [3] Keyboards(101- and 102-key)
- * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
- * Keyboard Layout, Scan Code Set, POR, and Commands.
- *
- * [4] PS/2 Reference Manuals
- * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
- * Collection of IBM Personal System/2 documents.
- *
- * [5] TrackPoint Engineering Specifications for version 3E
- * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html
  *
  * Exceptional Handling
  * --------------------
- * There are several keys to be handled exceptionally.
- * The scan code for these keys are varied or prefix/postfix'd depending on modifier key state.
+ * Some keys should be handled exceptionally. See [b].
+ *
+ * Scan codes are varied or prefix/postfix'd depending on modifier key state.
  *
  * 1) Insert, Delete, Home, End, PageUp, PageDown, Up, Down, Right, Left
  *     a) when Num Lock is off
@@ -513,12 +503,23 @@ int8_t process_cs1(void)
  *               And we need a ad hoc 'pseudo break code' hack to get the key off
  *               because it has no break code.
  *
+ * Notes:
+ * 'Hanguel/English'(F1) and 'Hanja'(F2) have no break code. See [a].
+ * These two Korean keys need exceptional handling and are not supported for now.
+ *
  */
 // matrix positions for exceptional keys
 #define F7             (0x02)
 #define PRINT_SCREEN   (0xFC)
 #define PAUSE          (0xFE)
-int8_t process_cs2(void)
+
+static uint8_t cs2_e0code(uint8_t code) {
+    switch(code) {
+        case 0x37: return 0x54; // Print Screen
+    }
+    return 0x00;
+}
+static int8_t process_cs2(void)
 {
     // scan code reading states
     static enum {
@@ -565,7 +566,6 @@ int8_t process_cs2(void)
                     break;
                 case 0x00:  // Overrun [3]p.26
                     matrix_clear();
-                    clear_keyboard();
                     xprintf("!CS2_OVERRUN!\n");
                     state = INIT;
                     break;
@@ -580,7 +580,6 @@ int8_t process_cs2(void)
                         matrix_make(code);
                     } else {
                         matrix_clear();
-                        clear_keyboard();
                         xprintf("!CS2_INIT!\n");
                     }
                     state = INIT;
@@ -599,11 +598,11 @@ int8_t process_cs2(void)
                     state = E0_F0;
                     break;
                 default:
+                    // TODO: fit E0-prefixed codes into 0x00-7F
                     if (code < 0x80) {
                         matrix_make(code|0x80);
                     } else {
                         matrix_clear();
-                        clear_keyboard();
                         xprintf("!CS2_E0!\n");
                     }
                     state = INIT;
@@ -624,7 +623,6 @@ int8_t process_cs2(void)
                         matrix_break(code);
                     } else {
                         matrix_clear();
-                        clear_keyboard();
                         xprintf("!CS2_F0!\n");
                     }
                     state = INIT;
@@ -637,11 +635,11 @@ int8_t process_cs2(void)
                     state = INIT;
                     break;
                 default:
+                    // TODO: fit E0-prefixed codes into 0x00-7F
                     if (code < 0x80) {
                         matrix_break(code|0x80);
                     } else {
                         matrix_clear();
-                        clear_keyboard();
                         xprintf("!CS2_E0_F0!\n");
                     }
                     state = INIT;
@@ -725,10 +723,11 @@ int8_t process_cs2(void)
 /*
  * Terminal: Scan Code Set 3
  *
- * https://www.seasip.info/VintagePC/ibm_1397000.html
- * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ * See [3], [7]
+ *
+ * Scan code 0x83 and 0x84 are handled exceptioanally to fit into 1-byte range index.
  */
-int8_t process_cs3(void)
+static int8_t process_cs3(void)
 {
     static enum {
         READY,
@@ -751,10 +750,10 @@ int8_t process_cs3(void)
                     state = F0;
                     break;
                 case 0x83:  // F7
-                    matrix_make(F7);
+                    matrix_make(0x02);
                     break;
                 case 0x84:  // keypad -
-                    matrix_make(0x7B); // cs2: keypad -
+                    matrix_make(0x7F);
                     break;
                 default:    // normal key make
                     if (code < 0x80) {
@@ -773,11 +772,11 @@ int8_t process_cs3(void)
                     state = READY;
                     break;
                 case 0x83:  // F7
-                    matrix_break(F7);
+                    matrix_break(0x02);
                     state = READY;
                     break;
                 case 0x84:  // keypad -
-                    matrix_break(0x7B); // cs2: keypad -
+                    matrix_break(0x7F);
                     state = READY;
                     break;
                 default:
@@ -792,3 +791,38 @@ int8_t process_cs3(void)
     }
     return 0;
 }
+
+/*
+ * IBM PC Keyboard Protocol Resources:
+ *
+ * [a] Microsoft USB HID to PS/2 Translation Table - Scan Code Set 1 and 2
+ * http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/translate.pdf
+ *
+ * [b] Microsoft Keyboard Scan Code Specification - Special rules of Scan Code Set 1 and 2
+ * http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc
+ *
+ * [1] The PS/2 Mouse/Keyboard Protocol - Concise primer of PS/2 protocol.
+ * http://www-ug.eecg.utoronto.ca/desl/nios_devices_SoC/datasheets/PS2%20Protocol.htm
+ *
+ * [2] Keyboard and Auxiliary Device Controller - Signal Timing and Format
+ * http://www.mcamafia.de/pdf/ibm_hitrc07.pdf
+ *
+ * [3] Keyboards(101- and 102-key) - Keyboard Layout, Scan Code Set, POR, and Commands.
+ * http://www.mcamafia.de/pdf/ibm_hitrc11.pdf
+ *
+ * [4] PS/2 Reference Manuals - Collection of IBM Personal System/2 documents.
+ * http://www.mcamafia.de/pdf/pdfref.htm
+ *
+ * [5] TrackPoint Engineering Specifications for version 3E
+ * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html
+ *
+ * [6] IBM PC XT Keyboard Protocol
+ * https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol
+ *
+ * [7] The IBM 6110344 Keyboard - Scan Code Set 3 of 122-key terminal keyboard
+ * https://www.seasip.info/VintagePC/ibm_6110344.html
+ *
+ * [8] IBM Keyboard Scan Code by John Elliott - 83-key, 84-key, 102-key and 122-key
+ * https://www.seasip.info/VintagePC/index.html
+ *
+ */
