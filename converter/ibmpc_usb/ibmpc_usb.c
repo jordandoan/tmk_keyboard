@@ -37,7 +37,7 @@ static int8_t process_cs3(void);
 
 
 static uint8_t matrix[MATRIX_ROWS];
-#define ROW(code)      (code>>3)
+#define ROW(code)      ((code>>3)&0x0F)
 #define COL(code)      (code&0x07)
 
 static int16_t read_wait(uint16_t wait_ms)
@@ -444,6 +444,7 @@ static int8_t process_cs1(void)
     return 0;
 }
 
+
 /*******************************************************************************
  * AT, PS/2: Scan Code Set 2
  *
@@ -508,17 +509,63 @@ static int8_t process_cs1(void)
  * These two Korean keys need exceptional handling and are not supported for now.
  *
  */
-// matrix positions for exceptional keys
-#define F7             (0x02)
-#define PRINT_SCREEN   (0xFC)
-#define PAUSE          (0xFE)
-
 static uint8_t cs2_e0code(uint8_t code) {
     switch(code) {
-        case 0x37: return 0x54; // Print Screen
+        // E0 prefixed codes translation See [a].
+        case 0x11: return 0x0F; // right alt
+        case 0x14: return 0x17; // right control
+        case 0x1F: return 0x19; // left GUI
+        case 0x27: return 0x1F; // right GUI
+        case 0x2F: return 0x5C; // apps
+        case 0x4A: return 0x60; // keypad /
+        case 0x5A: return 0x62; // keypad enter
+        case 0x69: return 0x27; // end
+        case 0x6B: return 0x53; // cursor left
+        case 0x6C: return 0x2F; // home
+        case 0x70: return 0x39; // insert
+        case 0x71: return 0x37; // delete
+        case 0x72: return 0x3F; // cursor down
+        case 0x74: return 0x47; // cursor right
+        case 0x75: return 0x4F; // cursor up
+        case 0x7A: return 0x56; // page down
+        case 0x7D: return 0x5E; // page up
+        case 0x7C: return 0x6F; // Print Screen
+        case 0x7E: return 0x00; // Control'd Pause
+
+        case 0x21: return 0x65; // volume down
+        case 0x32: return 0x6E; // volume up
+        case 0x23: return 0xFF; // mute
+        case 0x10: return 0x08; // (WWW search)     -> F13
+        case 0x18: return 0x10; // (WWW favourites) -> F14
+        case 0x20: return 0x18; // (WWW refresh)    -> F15
+        case 0x28: return 0x20; // (WWW stop)       -> F16
+        case 0x30: return 0x28; // (WWW forward)    -> F17
+        case 0x38: return 0x30; // (WWW back)       -> F18
+        case 0x3A: return 0x38; // (WWW home)       -> F19
+        case 0x40: return 0x40; // (my computer)    -> F20
+        case 0x48: return 0x48; // (email)          -> F21
+        case 0x2B: return 0x50; // (calculator)     -> F22
+        case 0x34: return 0x08; // (play/pause)     -> F13
+        case 0x3B: return 0x10; // (stop)           -> F14
+        case 0x15: return 0x18; // (previous track) -> F15
+        case 0x4D: return 0x20; // (next track)     -> F16
+        case 0x50: return 0x28; // (media select)   -> F17
+        case 0x5E: return 0x50; // (ACPI wake)      -> F22
+        case 0x3F: return 0x57; // (ACPI sleep)     -> F23
+        case 0x37: return 0x5F; // (ACPI power)     -> F24
+
+        // https://github.com/tmk/tmk_keyboard/pull/636
+        case 0x03: return 0x18; // Help        DEC LK411 -> F15
+        case 0x04: return 0x08; // F13         DEC LK411
+        case 0x0B: return 0x20; // Do          DEC LK411 -> F16
+        case 0x0C: return 0x10; // F14         DEC LK411
+        case 0x0D: return 0x19; // LCompose    DEC LK411 -> LGUI
+        case 0x79: return 0x6D; // KP-         DEC LK411 -> PCMM
+        case 0x83: return 0x28; // F17         DEC LK411
+        default: return (code & 0x7F);
     }
-    return 0x00;
 }
+
 static int8_t process_cs2(void)
 {
     // scan code reading states
@@ -533,10 +580,6 @@ static int8_t process_cs2(void)
         E1_F0,
         E1_F0_14,
         E1_F0_14_F0,
-        // Control'd Pause
-        E0_7E,
-        E0_7E_E0,
-        E0_7E_E0_F0,
     } state = INIT;
 
     uint16_t code = ibmpc_host_recv();
@@ -557,11 +600,11 @@ static int8_t process_cs2(void)
                     state = E1;
                     break;
                 case 0x83:  // F7
-                    matrix_make(F7);
+                    matrix_make(0x02);
                     state = INIT;
                     break;
                 case 0x84:  // Alt'd PrintScreen
-                    matrix_make(PRINT_SCREEN);
+                    matrix_make(0x6F);
                     state = INIT;
                     break;
                 case 0x00:  // Overrun [3]p.26
@@ -591,16 +634,12 @@ static int8_t process_cs2(void)
                 case 0x59:  // to be ignored
                     state = INIT;
                     break;
-                case 0x7E:  // Control'd Pause
-                    state = E0_7E;
-                    break;
                 case 0xF0:
                     state = E0_F0;
                     break;
                 default:
-                    // TODO: fit E0-prefixed codes into 0x00-7F
                     if (code < 0x80) {
-                        matrix_make(code|0x80);
+                        matrix_make(cs2_e0code(code));
                     } else {
                         matrix_clear();
                         xprintf("!CS2_E0!\n");
@@ -611,11 +650,11 @@ static int8_t process_cs2(void)
         case F0:    // Break code
             switch (code) {
                 case 0x83:  // F7
-                    matrix_break(F7);
+                    matrix_break(0x02);
                     state = INIT;
                     break;
                 case 0x84:  // Alt'd PrintScreen
-                    matrix_break(PRINT_SCREEN);
+                    matrix_break(0x6F);
                     state = INIT;
                     break;
                 default:
@@ -635,9 +674,8 @@ static int8_t process_cs2(void)
                     state = INIT;
                     break;
                 default:
-                    // TODO: fit E0-prefixed codes into 0x00-7F
                     if (code < 0x80) {
-                        matrix_break(code|0x80);
+                        matrix_break(cs2_e0code(code));
                     } else {
                         matrix_clear();
                         xprintf("!CS2_E0_F0!\n");
@@ -645,7 +683,7 @@ static int8_t process_cs2(void)
                     state = INIT;
             }
             break;
-        // States of Pause
+        // Pause make: E1 14 77
         case E1:
             switch (code) {
                 case 0x14:
@@ -661,13 +699,14 @@ static int8_t process_cs2(void)
         case E1_14:
             switch (code) {
                 case 0x77:
-                    matrix_make(PAUSE);
+                    matrix_make(0x00);
                     state = INIT;
                     break;
                 default:
                     state = INIT;
             }
             break;
+        // Pause break: E1 F0 14 F0 77
         case E1_F0:
             switch (code) {
                 case 0x14:
@@ -689,30 +728,12 @@ static int8_t process_cs2(void)
         case E1_F0_14_F0:
             switch (code) {
                 case 0x77:
-                    matrix_break(PAUSE);
+                    matrix_break(0x00);
                     state = INIT;
                     break;
                 default:
                     state = INIT;
             }
-            break;
-        // States of Control'd Pause
-        case E0_7E:
-            if (code == 0xE0)
-                state = E0_7E_E0;
-            else
-                state = INIT;
-            break;
-        case E0_7E_E0:
-            if (code == 0xF0)
-                state = E0_7E_E0_F0;
-            else
-                state = INIT;
-            break;
-        case E0_7E_E0_F0:
-            if (code == 0x7E)
-                matrix_make(PAUSE);
-            state = INIT;
             break;
         default:
             state = INIT;

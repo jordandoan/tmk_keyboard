@@ -21,7 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <avr/interrupt.h>
 
 #define VENDOR_ID       0xFEED
-#define PRODUCT_ID      0x6512
+#define PRODUCT_ID      0x1bee
 #define DEVICE_VER      0x0001
 #define MANUFACTURER    t.m.k.
 #define PRODUCT         IBM PC keyboard converter
@@ -29,7 +29,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
 /* matrix size */
-#define MATRIX_ROWS 32  // keycode bit: 7-3
+#define MATRIX_ROWS 16  // keycode bit: 6-3
 #define MATRIX_COLS 8   // keycode bit: 2-0
 
 
