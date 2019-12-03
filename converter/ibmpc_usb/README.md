@@ -118,8 +118,8 @@ http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456
 [b] [Microsoft Keyboard Scan Code Specification - Special rules of Scan Code Set 1 and 2](
 http://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/scancode.doc)
 
-[1] [The PS/2 Mouse/Keyboard Protocol - Concise primer of PS/2 protocol](
-http://www-ug.eecg.utoronto.ca/desl/nios_devices_SoC/datasheets/PS2%20Protocol.htm)
+[1] [PS/2 Reference Manuals - Collection of IBM Personal System/2 documents](
+http://www.mcamafia.de/pdf/pdfref.htm)
 
 [2] [Keyboard and Auxiliary Device Controller - Signal Timing and Format](
 http://www.mcamafia.de/pdf/ibm_hitrc07.pdf)
@@ -127,22 +127,22 @@ http://www.mcamafia.de/pdf/ibm_hitrc07.pdf)
 [3] [Keyboards(101- and 102-key) - Keyboard Layout, Scan Code Set, POR, and Commands](
 http://www.mcamafia.de/pdf/ibm_hitrc11.pdf)
 
-[4] [PS/2 Reference Manuals - Collection of IBM Personal System/2 documents](
-http://www.mcamafia.de/pdf/pdfref.htm)
-
-[5] [TrackPoint Engineering Specifications for version 3E](
-https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html)
-
-[6] [IBM PC XT Keyboard Protocol](
+[4] [IBM PC XT Keyboard Protocol](
 https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol)
+
+[5] [IBM Keyboard Scan Code by John Elliott - 83-key, 84-key, 102-key and 122-key](
+https://www.seasip.info/VintagePC/index.html)
+
+[6] [IBM 1391406 Keyboard - Scan Code Set 2 of 102-key PS/2 keyboard]
+(https://www.seasip.info/VintagePC/ibm_1391406.html)
 
 [7] [The IBM 6110344 Keyboard - Scan Code Set 3 of 122-key terminal keyboard](
 https://www.seasip.info/VintagePC/ibm_6110344.html)
 
-[8] [IBM Keyboard Scan Code by John Elliott - 83-key, 84-key, 102-key and 122-key](
-https://www.seasip.info/VintagePC/index.html)
+[y] [TrackPoint Engineering Specifications for version 3E](
+https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html)
 
-[9] [Soarer's XT/AT/PS2/Terminal to USB converter](
+[z] [Soarer's XT/AT/PS2/Terminal to USB converter](
 https://geekhack.org/index.php?topic=17458.0)
 
 
