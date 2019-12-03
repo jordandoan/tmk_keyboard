@@ -1,4 +1,4 @@
-IBM PC Keyboard converter
+IBM PC Keyboard Converter
 =========================
 The converter translates IBM PC keyboard protocols to use classic keyboards with modern computer with USB ports.
 It supports both IBM XT and AT protocols, and all of scan code set 1, 2 and 3 with one firmware.
@@ -32,9 +32,9 @@ Hardware
 Firmware supports ATMega32u4 by default, Teensy2/2++ or ProMicro can be used.
 Wire controller pins below to keyboard signals, besides VCC and GND. This is compatible for Soarer's converter.
 
-    Data    PD0
-    Clock   PD1
-    Reset   PB6 or PB7 (For some of XT keyboards. Not needed for AT, PS/2 and Terminal)
+- Data    PD0
+- Clock   PD1
+- Reset   PB6 or PB7 (For some of XT keyboards. Not needed for AT, PS/2 and Terminal)
 
 Pull up resistors of 1-4.7K Ohm on both Data and Clock line are recommended, without them it won't work in some cases.
 
@@ -45,8 +45,6 @@ See this for Type-1 vs Type-2:
 https://vintagecomputer.ca/ibm-pc-model-f-keyboard-type-1-vs-type-2/
 
 As for clones Zenith Z-150 XT and  Leading Edge DC-2014 are known to need this.
-
-
 
 ### Connector pinouts
 #### XT
