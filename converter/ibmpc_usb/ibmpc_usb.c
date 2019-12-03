@@ -534,7 +534,7 @@ static uint8_t cs2_e0code(uint8_t code) {
 
         case 0x21: return 0x65; // volume down
         case 0x32: return 0x6E; // volume up
-        case 0x23: return 0xFF; // mute
+        case 0x23: return 0x7F; // mute
         case 0x10: return 0x08; // (WWW search)     -> F13
         case 0x18: return 0x10; // (WWW favourites) -> F14
         case 0x20: return 0x18; // (WWW refresh)    -> F15
