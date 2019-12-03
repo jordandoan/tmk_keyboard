@@ -25,6 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "led.h"
 #include "matrix.h"
 #include "timer.h"
+#include "action.h"
 #include "ibmpc_usb.h"
 
 
@@ -138,6 +139,7 @@ uint8_t matrix_scan(void)
             last_time = timer_read();
             state = WAIT_STARTUP;
             matrix_clear();
+            clear_keyboard();
             break;
         case WAIT_STARTUP:
             // read and ignore BAT code and other codes when power-up
