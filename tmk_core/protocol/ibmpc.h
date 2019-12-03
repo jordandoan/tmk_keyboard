@@ -96,22 +96,71 @@ void ibmpc_host_set_led(uint8_t usb_led);
 
 
 /*--------------------------------------------------------------------
- * Pin operations to be implemented by user
- *------------------------------------------------------------------*/
-void clock_init(void);
-void clock_lo(void);
-void clock_hi(void);
-bool clock_in(void);
-
-void data_init(void);
-void data_lo(void);
-void data_hi(void);
-bool data_in(void);
-
-
-/*--------------------------------------------------------------------
  * static functions
  *------------------------------------------------------------------*/
+#if defined(__AVR__)
+/*
+ * Clock
+ */
+static inline void clock_init(void)
+{
+    IBMPC_CLOCK_PORT &= ~(1<<IBMPC_CLOCK_BIT);
+    IBMPC_CLOCK_DDR  |=  (1<<IBMPC_CLOCK_BIT);
+}
+
+static inline void clock_lo(void)
+{
+    IBMPC_CLOCK_PORT &= ~(1<<IBMPC_CLOCK_BIT);
+    IBMPC_CLOCK_DDR  |=  (1<<IBMPC_CLOCK_BIT);
+}
+
+static inline void clock_hi(void)
+{
+    /* input with pull up */
+    IBMPC_CLOCK_DDR  &= ~(1<<IBMPC_CLOCK_BIT);
+    IBMPC_CLOCK_PORT |=  (1<<IBMPC_CLOCK_BIT);
+}
+
+static inline bool clock_in(void)
+{
+    IBMPC_CLOCK_DDR  &= ~(1<<IBMPC_CLOCK_BIT);
+    IBMPC_CLOCK_PORT |=  (1<<IBMPC_CLOCK_BIT);
+    wait_us(1);
+    return IBMPC_CLOCK_PIN&(1<<IBMPC_CLOCK_BIT);
+}
+
+/*
+ * Data
+ */
+static inline void data_init(void)
+{
+    IBMPC_DATA_DDR  &= ~(1<<IBMPC_DATA_BIT);
+    IBMPC_DATA_PORT |=  (1<<IBMPC_DATA_BIT);
+}
+
+static inline void data_lo(void)
+{
+    IBMPC_DATA_PORT &= ~(1<<IBMPC_DATA_BIT);
+    IBMPC_DATA_DDR  |=  (1<<IBMPC_DATA_BIT);
+}
+
+static inline void data_hi(void)
+{
+    /* input with pull up */
+    IBMPC_DATA_DDR  &= ~(1<<IBMPC_DATA_BIT);
+    IBMPC_DATA_PORT |=  (1<<IBMPC_DATA_BIT);
+}
+
+static inline bool data_in(void)
+{
+    IBMPC_DATA_DDR  &= ~(1<<IBMPC_DATA_BIT);
+    IBMPC_DATA_PORT |=  (1<<IBMPC_DATA_BIT);
+    wait_us(1);
+    return IBMPC_DATA_PIN&(1<<IBMPC_DATA_BIT);
+}
+#endif
+
+
 static inline uint16_t wait_clock_lo(uint16_t us)
 {
     while (clock_in()  && us) { asm(""); wait_us(1); us--; }

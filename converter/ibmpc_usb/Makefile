@@ -9,7 +9,6 @@ TARGET_DIR ?= .
 
 # project specific files
 SRC ?=	protocol/ibmpc.c \
-	ibmpc_pin.c \
 	ibmpc_usb.c
 
 CONFIG_H ?= config.h
