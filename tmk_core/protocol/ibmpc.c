@@ -164,7 +164,6 @@ ISR(IBMPC_INT_VECT)
 {
     static uint16_t last_time = 0;
     static enum {
-        INIT,
         START,
         BIT0, BIT1, BIT2, BIT3, BIT4, BIT5, BIT6, BIT7,
         PARITY,
@@ -240,17 +239,18 @@ ISR(IBMPC_INT_VECT)
         default:
             goto ERROR;
     }
-
     goto NEXT;
+
 ERROR:
     ibmpc_error |= state;
     ibmpc_error |= IBMPC_ERR_RECV;
     ringbuf_reset(&rb);
 DONE:
     last_time = 0;
-    state = INIT;
+    state = START;
     data = 0;
     parity = 1;
+    return;
 NEXT:
     state++;
     return;
