@@ -106,6 +106,14 @@ Now we can dscriminate the keyboard and determine suitable protocol and scan cod
 
 
 
+Debug
+-----
+Use hid_listen to see debug outputs from the converter.
+
+https://www.pjrc.com/teensy/hid_listen.html
+
+
+
 Resources
 ---------
 IBM PC Keyboard Protocol Resources:
