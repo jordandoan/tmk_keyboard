@@ -281,22 +281,21 @@ void led_set(uint8_t usb_led)
  *
  * See [3], [a]
  *
- * E0-escaped scan codes are translated into unused area of the matrix.(54-7F)
+ * E0-escaped scan codes are translated into unused range of the matrix.(54-7F)
  *
  *     01-53: Normal codes used in original XT keyboard
  *     54-7F: Not used in original XT keyboard
  *
  *         0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
- *     50  -   -   -   -   *   *   x   x   x   x   *   *   *   o   o   o
+ *     50  -   -   -   -   *   *   x   x   x   x   *   *   *   *   *   *
  *     60  *   *   *   *   x   x   x   x   x   x   x   x   x   x   x   *
  *     70  x   *   *   x   *   *   x   *   *   x   *   x   *   x   x   *
  *
  * -: codes existed in original XT keyboard
- * *: E0-escaped codes converted into unused code area(internal use in TMK)
- * x: Non-espcaped codes(not used in real keyboards probably, for CodeSet2-CodeSet1 translation purpose)
- * o: reserved
+ * *: E0-escaped codes translated
+ * x: Non-espcaped codes(Some are not used in real keyboards probably)
  *
- * Usage in TMK:
+ * Codes assigned in range 54-7F:
  *
  *     50  -                60  Up*                 70  KANAx
  *     51  -                61  Left*               71  Insert*

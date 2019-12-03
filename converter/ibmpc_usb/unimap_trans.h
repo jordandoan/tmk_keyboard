@@ -24,23 +24,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "ibmpc_usb.h"
 
 
-#define UNIMAP_PS2( \
-            K68,K69,K6A,K6B,K6C,K6D,K6E,K6F,K70,K71,K72,K73,                                     \
-    K29,    K3A,K3B,K3C,K3D,K3E,K3F,K40,K41,K42,K43,K44,K45,      K46,K47,K48,      K01,K02,K03, \
-    K35,K1E,K1F,K20,K21,K22,K23,K24,K25,K26,K27,K2D,K2E,K74,K2A,  K49,K4A,K4B,  K53,K54,K55,K56, \
-    K2B,K14,K1A,K08,K15,K17,K1C,K18,K0C,K12,K13,K2F,K30,    K31,  K4C,K4D,K4E,  K5F,K60,K61,K57, \
-    K39,K04,K16,K07,K09,K0A,K0B,K0D,K0E,K0F,K33,K34,        K28,                K5C,K5D,K5E,K66, \
-    K79,K64,K1D,K1B,K06,K19,K05,K11,K10,K36,K37,K38,    K75,K7D,      K52,      K59,K5A,K5B,K58, \
-    K78,K7B,K7A,K77,        K2C,        K76,K00,K7E,K7F,K65,K7C,  K50,K51,K4F,  K32,K62,K63,K67  \
-) UNIMAP ( \
-            K68,K69,K6A,K6B,K6C,K6D,K6E,K6F,K70,K71,K72,K73,                                     \
-    K29,    K3A,K3B,K3C,K3D,K3E,K3F,K40,K41,K42,K43,K44,K45,      K46,K47,K48,      K01,K02,K03, \
-    K35,K1E,K1F,K20,K21,K22,K23,K24,K25,K26,K27,K2D,K2E,K74,K2A,  K49,K4A,K4B,  K53,K54,K55,K56, \
-    K2B,K14,K1A,K08,K15,K17,K1C,K18,K0C,K12,K13,K2F,K30,    K31,  K4C,K4D,K4E,  K5F,K60,K61,K57, \
-    K39,K04,K16,K07,K09,K0A,K0B,K0D,K0E,K0F,K33,K34,    K32,K28,                K5C,K5D,K5E,K66, \
-    K79,K64,K1D,K1B,K06,K19,K05,K11,K10,K36,K37,K38,    K75,K7D,      K52,      K59,K5A,K5B,K58, \
-    K78,K7B,K7A,K77,        K2C,        K76,K00,K7E,K7F,K65,K7C,  K50,K51,K4F,      K62,K63,K67  \
-)
 
 /* Mapping to Universal keyboard layout
  *
@@ -89,6 +72,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
  * |-------|  |----------------------------------------------------------------------|   |
  * | 43| 44|  |  38   |              39                      |  3A   |  52   |  53   |   |
  * `-------'  `--------------------------------------------------------------------------'
+ * [3], [a]
  */
 const uint8_t PROGMEM unimap_cs1[MATRIX_ROWS][MATRIX_COLS] = {
     { UNIMAP_NO,    UNIMAP_ESC,   UNIMAP_1,     UNIMAP_2,     UNIMAP_3,     UNIMAP_4,     UNIMAP_5,     UNIMAP_6     }, /* 00-07 */
@@ -108,6 +92,7 @@ const uint8_t PROGMEM unimap_cs1[MATRIX_ROWS][MATRIX_COLS] = {
     { UNIMAP_KANA,  UNIMAP_INSERT,UNIMAP_DELETE,UNIMAP_RO,    UNIMAP_HOME,  UNIMAP_END,   UNIMAP_F24,   UNIMAP_PGUP  }, /* 70-77 */
     { UNIMAP_PGDN,  UNIMAP_HENK,  UNIMAP_RCTL,  UNIMAP_MHEN,  UNIMAP_RALT,  UNIMAP_JYEN,  UNIMAP_PCMM,  UNIMAP_PSLS  }, /* 78-7F */
 };
+
 
 /*
  * Scan Code Set 2:
@@ -131,21 +116,23 @@ const uint8_t PROGMEM unimap_cs1[MATRIX_ROWS][MATRIX_COLS] = {
  *         ,-----------------------------------------------.
  *         | 08| 10| 18| 20| 28| 30| 38| 40| 48| 50| 57| 5F|
  * ,---.   |-----------------------------------------------|     ,-----------.     ,-----------.
- * | 76|   | 05| 06| 04| 0C| 03| 0B| 83| 0A| 01| 09| 78| 07|     | FC| 7E| FE|     | A1| B2| A3|
+ * | 76|   | 05| 06| 04| 0C| 03| 0B| 83| 0A| 01| 09| 78| 07|     |+7C| 7E|+77|     |*21|*32|*23|
  * `---'   `-----------------------------------------------'     `-----------'     `-----------'
  * ,-----------------------------------------------------------. ,-----------. ,---------------.
- * | 0E| 16| 1E| 26| 25| 2E| 36| 3D| 3E| 46| 45| 4E| 55| 6A| 66| | F0| EC| FD| | 77| CA| 7C| 7B|
+ * | 0E| 16| 1E| 26| 25| 2E| 36| 3D| 3E| 46| 45| 4E| 55| 6A| 66| |*70|*6C|*7D| | 77|*4A| 7C| 7B|
  * |-----------------------------------------------------------| |-----------| |---------------|
- * | 0D  | 15| 1D| 24| 2D| 2C| 35| 3C| 43| 44| 4D| 54| 5B|  5D | | F1| E9| FA| | 6C| 75| 7D| 79|
+ * | 0D  | 15| 1D| 24| 2D| 2C| 35| 3C| 43| 44| 4D| 54| 5B|  5D | |*71|*69|*7A| | 6C| 75| 7D| 79|
  * |-----------------------------------------------------------| `-----------' |---------------|
  * | 58   | 1C| 1B| 23| 2B| 34| 33| 3B| 42| 4B| 4C| 52| ^a| 5A |               | 6B| 73| 74| 6D|
  * |-----------------------------------------------------------|     ,---.     |---------------|
- * | 12 | 61| 1A| 22| 21| 2A| 32| 31| 3A| 41| 49| 4A| 51|  59  |     | F5|     | 69| 72| 7A| DA|
+ * | 12 | 61| 1A| 22| 21| 2A| 32| 31| 3A| 41| 49| 4A| 51|  59  |     |*75|     | 69| 72| 7A|*5A|
  * |-----------------------------------------------------------| ,-----------. |---------------|
- * | 14| 9F| 11| 67 |     29         | 64 | 13 | 91| A7| AF| 94| | EB| F2| F4| | 68|70 | 71| 63|
+ * | 14|*1F| 11| 67 |     29         | 64 | 13 |*11|*27|*2F|*14| |*6B|*72|*74| | 68| 70| 71| 63|
  * `-----------------------------------------------------------' `-----------' `---------------'
- * ^a ISO hash key uses identical scancode 5D to US backslash.
- * 51, 63, 68, 6D: hidden keys in IBM model M
+ * *: E0-prefixed codes
+ * +: Special codes sequence
+ * ^a: ISO hash key uses identical scancode 5D to US backslash.
+ * 51, 63, 68, 6A, 6D: Hidden keys in IBM model M [6]
  */
 const uint8_t PROGMEM unimap_cs2[MATRIX_ROWS][MATRIX_COLS] = {
     { UNIMAP_PAUS,  UNIMAP_F9,    UNIMAP_F7,    UNIMAP_F5,    UNIMAP_F3,    UNIMAP_F1,    UNIMAP_F2,    UNIMAP_F12   }, /* 00-07 */
@@ -165,6 +152,7 @@ const uint8_t PROGMEM unimap_cs2[MATRIX_ROWS][MATRIX_COLS] = {
     { UNIMAP_P0,    UNIMAP_PDOT,  UNIMAP_P2,    UNIMAP_P5,    UNIMAP_P6,    UNIMAP_P8,    UNIMAP_ESC,   UNIMAP_NLCK  }, /* 70-77 */
     { UNIMAP_F11,   UNIMAP_PPLS,  UNIMAP_P3,    UNIMAP_PMNS,  UNIMAP_PAST,  UNIMAP_P9,    UNIMAP_SLCK,  UNIMAP_MUTE  }, /* 78-7F */
 };
+
 
 /*
  * Scan Code Set 3:
@@ -201,9 +189,8 @@ const uint8_t PROGMEM unimap_cs2[MATRIX_ROWS][MATRIX_COLS] = {
  * |-------| |-----------------------------------------------------------| `-----------' |---------------|
  * | 01| 09| | 11  |   |19  |        29                   |39  |   | 58  |     | 60|     | 68| 70| 71| 78|
  * `-------' `-----'   `---------------------------------------'   `-----'     `---'     `---------------'
- * *83=02
- * *84=7F
- * 51, 5C, 5D, 68, 78: hidden keys in IBM 122-key terminal keyboard
+ * *: 83=02, 84=7F
+ * 51, 5C, 5D, 68, 78: Hidden keys in IBM 122-key terminal keyboard [7]
  */
 const uint8_t PROGMEM unimap_cs3[MATRIX_ROWS][MATRIX_COLS] = {
     { UNIMAP_NO,    UNIMAP_LGUI,  UNIMAP_VOLD,  UNIMAP_PAUSE, UNIMAP_SLCK,  UNIMAP_PSCR,  UNIMAP_ESC,   UNIMAP_F1    }, /* 00-07 */
