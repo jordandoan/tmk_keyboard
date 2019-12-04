@@ -139,8 +139,8 @@ https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol)
 [5] [IBM Keyboard Scan Code by John Elliott - 83-key, 84-key, 102-key and 122-key](
 https://www.seasip.info/VintagePC/index.html)
 
-[6] [IBM 1391406 Keyboard - Scan Code Set 2 of 102-key PS/2 keyboard]
-(https://www.seasip.info/VintagePC/ibm_1391406.html)
+[6] [IBM 1391406 Keyboard - Scan Code Set 2 of 102-key PS/2 keyboard](
+https://www.seasip.info/VintagePC/ibm_1391406.html)
 
 [7] [The IBM 6110344 Keyboard - Scan Code Set 3 of 122-key terminal keyboard](
 https://www.seasip.info/VintagePC/ibm_6110344.html)
