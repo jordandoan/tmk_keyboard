@@ -41,7 +41,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdbool.h>
 #include <avr/interrupt.h>
-#include "ringbuf.h"
+#include <util/atomic.h>
 #include "ibmpc.h"
 #include "debug.h"
 #include "timer.h"
@@ -56,27 +56,42 @@ POSSIBILITY OF SUCH DAMAGE.
 } while (0)
 
 
-#define BUF_SIZE 16
-static uint8_t buf[BUF_SIZE];
-static ringbuf_t rb = {
-    .buffer = buf,
-    .head = 0,
-    .tail = 0,
-    .size_mask = BUF_SIZE - 1
-};
-
-volatile uint8_t ibmpc_protocol = IBMPC_PROTOCOL_AT;
+volatile uint16_t ibmpc_isr_debug = 0;
+volatile uint8_t ibmpc_protocol = IBMPC_PROTOCOL_NO;
 volatile uint8_t ibmpc_error = IBMPC_ERR_NONE;
+
+/* 2-byte buffer for data received from keyboard
+ * buffer states:
+ *      FFFF: empty
+ *      FFss: one data
+ *      sstt: two data
+ *      eeFF: error
+ * where ss, tt and ee are 0x00-0xFE. 0xFF means empty or no data in buffer.
+ */
+static volatile uint16_t recv_data = 0xFFFF;
+/* internal state of receiving data */
+static volatile uint16_t isr_state = 0x8000;
+static uint8_t timer_start = 0;
 
 void ibmpc_host_init(void)
 {
-    clock_init();
-    data_init();
-    idle();
+    // initialize reset pin to HiZ
+    IBMPC_RST_HIZ();
+    inhibit();
     IBMPC_INT_INIT();
+    IBMPC_INT_OFF();
+}
+
+void ibmpc_host_enable(void)
+{
     IBMPC_INT_ON();
-    // POR(150-2000ms) plus BAT(300-500ms) may take 2.5sec([3]p.20)
-    //wait_ms(2500);
+    idle();
+}
+
+void ibmpc_host_disable(void)
+{
+    IBMPC_INT_OFF();
+    inhibit();
 }
 
 int16_t ibmpc_host_send(uint8_t data)
@@ -84,20 +99,19 @@ int16_t ibmpc_host_send(uint8_t data)
     bool parity = true;
     ibmpc_error = IBMPC_ERR_NONE;
 
-    if (ibmpc_protocol == IBMPC_PROTOCOL_XT) return -1;
-
     dprintf("w%02X ", data);
 
     IBMPC_INT_OFF();
 
     /* terminate a transmission if we have */
     inhibit();
-    wait_us(100); // 100us [4]p.13, [5]p.50
+    wait_us(100);    // [5]p.54
 
     /* 'Request to Send' and Start bit */
     data_lo();
-    clock_hi();
-    WAIT(clock_lo, 10000, 1);   // 10ms [5]p.50
+    wait_us(100);
+    clock_hi();     // [5]p.54 [clock low]>100us [5]p.50
+    WAIT(clock_lo, 10000, 1);   // [5]p.53, -10ms [5]p.50
 
     /* Data bit[2-9] */
     for (uint8_t i = 0; i < 8; i++) {
@@ -121,14 +135,21 @@ int16_t ibmpc_host_send(uint8_t data)
     /* Stop bit */
     wait_us(15);
     data_hi();
-
-    /* Ack */
-    WAIT(data_lo, 50, 6);
+    WAIT(clock_hi, 50, 6);
+    if (ibmpc_protocol == IBMPC_PROTOCOL_AT_Z150) { goto RECV; }
     WAIT(clock_lo, 50, 7);
 
+    /* Ack */
+    WAIT(data_lo, 50, 8);
+
     /* wait for idle state */
-    WAIT(clock_hi, 50, 8);
-    WAIT(data_hi, 50, 9);
+    WAIT(clock_hi, 50, 9);
+    WAIT(data_hi, 50, 10);
+
+RECV:
+    // clear buffer to get response correctly
+    recv_data = 0xFFFF;
+    ibmpc_host_isr_clear();
 
     idle();
     IBMPC_INT_ON();
@@ -140,125 +161,261 @@ ERROR:
     return -1;
 }
 
+/*
+ * Receive data from keyboard
+ */
+int16_t ibmpc_host_recv(void)
+{
+    uint16_t data = 0;
+    uint8_t ret = 0xFF;
+
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        data = recv_data;
+
+        // remove data from buffer:
+        // FFFF(empty)      -> FFFF
+        // FFss(one data)   -> FFFF
+        // sstt(two data)   -> FFtt
+        // eeFF(errror)     -> FFFF
+        recv_data = data | (((data&0xFF00) == 0xFF00) ? 0x00FF : 0xFF00);
+    }
+
+    if ((data&0x00FF) == 0x00FF) {
+        // error: eeFF
+        switch (data>>8) {
+            case IBMPC_ERR_FF:
+                // 0xFF(Overrun/Error) from keyboard
+                dprintf("!FF! ");
+                ret = 0xFF;
+                break;
+            case IBMPC_ERR_FULL:
+                // buffer full
+                dprintf("!FULL! ");
+                ret = 0xFF;
+                break;
+            case 0xFF:
+                // empty: FFFF
+                return -1;
+            default:
+                // other errors
+                dprintf("e%02X ", data>>8);
+                return -1;
+        }
+    } else {
+        if ((data | 0x00FF) != 0xFFFF) {
+            // two data: sstt
+            dprintf("b:%04X ", data);
+            ret = (data>>8);
+        } else {
+            // one data: FFss
+            ret = (data&0x00FF);
+        }
+    }
+
+    //dprintf("i%04X ", ibmpc_isr_debug); ibmpc_isr_debug = 0;
+    dprintf("r%02X ", ret);
+    return ret;
+}
+
 int16_t ibmpc_host_recv_response(void)
 {
     // Command may take 25ms/20ms at most([5]p.46, [3]p.21)
     uint8_t retry = 25;
-    while (retry-- && ringbuf_is_empty(&rb)) {
+    int16_t data = -1;
+    while (retry-- && (data = ibmpc_host_recv()) == -1) {
         wait_ms(1);
     }
-    int16_t data = ringbuf_get(&rb);
-    if (data != -1) dprintf("r%02X ", data);
     return data;
 }
 
-/* get data received by interrupt */
-int16_t ibmpc_host_recv(void)
+void ibmpc_host_isr_clear(void)
 {
-    int16_t data = ringbuf_get(&rb);
-    if (data != -1) dprintf("r%02X ", data);
-    return data;
+    ibmpc_isr_debug = 0;
+    ibmpc_protocol = 0;
+    ibmpc_error = 0;
+    isr_state = 0x8000;
+    recv_data = 0xFFFF;
 }
 
+#define LO8(w)  (*((uint8_t *)&(w)))
+#define HI8(w)  (*(((uint8_t *)&(w))+1))
+// NOTE: With this ISR data line can be read within 2us after clock falling edge.
+// To read data line early as possible:
+// write naked ISR with asembly code to read the line and call C func to do other job?
 ISR(IBMPC_INT_VECT)
 {
-    static uint16_t last_time = 0;
-    static enum {
-        START,
-        BIT0, BIT1, BIT2, BIT3, BIT4, BIT5, BIT6, BIT7,
-        PARITY,
-        STOP,
-    } state = START;
-    static uint8_t data = 0;
-    static uint8_t parity = 1;
+    uint8_t dbit;
+    dbit = IBMPC_DATA_PIN&(1<<IBMPC_DATA_BIT);
 
-    // return unless falling edge
-    if (clock_in()) {
-        return;
+    // Timeout check
+    uint8_t t;
+    // use only the least byte of millisecond timer
+    asm("lds %0, %1" : "=r" (t) : "p" (&timer_count));
+    //t = (uint8_t)timer_count;    // compiler uses four registers instead of one
+    if (isr_state == 0x8000) {
+        timer_start = t;
+    } else {
+        // This gives 2.0ms at least before timeout
+        if ((uint8_t)(t - timer_start) >= 3) {
+            ibmpc_isr_debug = isr_state;
+            ibmpc_error = IBMPC_ERR_TIMEOUT;
+            goto ERROR;
+
+            // timeout error recovery - start receiving new data
+            // it seems to work somehow but may not under unstable situation
+            //timer_start = t;
+            //isr_state = 0x8000;
+        }
     }
 
-    // Reset state when taking more than 1ms
-    if (last_time && timer_elapsed(last_time) > 10) {
-        ibmpc_error = IBMPC_ERR_TIMEOUT | IBMPC_ERR_RECV | state;
-        state = START;
-        data = 0;
-        parity = 1;
-    }
-    last_time = timer_read();
+    isr_state = isr_state>>1;
+    if (dbit) isr_state |= 0x8000;
 
-    switch (state) {
-        case START:
-            if (ibmpc_protocol == IBMPC_PROTOCOL_XT) {
-                // ignore start(0) bit
-                if (!data_in()) return;
-            } else {
-                if (data_in())
-                    goto ERROR;
-            }
-        case BIT0:
-        case BIT1:
-        case BIT2:
-        case BIT3:
-        case BIT4:
-        case BIT5:
-        case BIT6:
-        case BIT7:
-            data >>= 1;
-            if (data_in()) {
-                data |= 0x80;
-                parity++;
-            }
-            if (state == BIT7 && ibmpc_protocol == IBMPC_PROTOCOL_XT) {
-                if (!ringbuf_put(&rb, data)) {
-                    ibmpc_error = IBMPC_ERR_FULL;
-                    goto ERROR;
+    // isr_state: state of receiving data from keyboard
+    //
+    // This should be initialized with 0x8000 before receiving data and
+    // the MSB '*1' works as marker to discrimitate between protocols.
+    // It stores sampled bit at MSB after right shift on each clock falling edge.
+    //
+    // XT protocol has two variants of signaling; XT_IBM and XT_Clone.
+    // XT_IBM uses two start bits 0 and 1 while XT_Clone uses just start bit 1.
+    // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol
+    //
+    //      15 14 13 12   11 10  9  8    7  6  5  4    3  2  1  0
+    //      -----------------------------------------------------
+    //      *1  0  0  0    0  0  0  0 |  0  0  0  0    0  0  0  0     Initial state(0x8000)
+    //
+    //       x  x  x  x    x  x  x  x |  0  0  0  0    0  0  0  0     midway(0-7 bits received)
+    //       x  x  x  x    x  x  x  x | *1  0  0  0    0  0  0  0     midway(8 bits received)
+    //      b6 b5 b4 b3   b2 b1 b0  1 |  0 *1  0  0    0  0  0  0     XT_IBM-midway ^1
+    //      b7 b6 b5 b4   b3 b2 b1 b0 |  0 *1  0  0    0  0  0  0     AT-midway ^1
+    //      b7 b6 b5 b4   b3 b2 b1 b0 |  1 *1  0  0    0  0  0  0     XT_Clone-done ^3
+    //      b6 b5 b4 b3   b2 b1 b0  1 |  1 *1  0  0    0  0  0  0     XT_IBM-error ^3
+    //      pr b7 b6 b5   b4 b3 b2 b1 |  0  0 *1  0    0  0  0  0     AT-midway[b0=0]
+    //      b7 b6 b5 b4   b3 b2 b1 b0 |  1  0 *1  0    0  0  0  0     XT_IBM-done ^2
+    //      pr b7 b6 b5   b4 b3 b2 b1 |  1  0 *1  0    0  0  0  0     AT-midway[b0=1] ^2
+    //      b7 b6 b5 b4   b3 b2 b1 b0 |  1  1 *1  0    0  0  0  0     XT_IBM-error-done
+    //       x  x  x  x    x  x  x  x |  x  1  1  0    0  0  0  0     illegal
+    //      st pr b7 b6   b5 b4 b3 b2 | b1 b0  0 *1    0  0  0  0     AT-done
+    //       x  x  x  x    x  x  x  x |  x  x  1 *1    0  0  0  0     illegal
+    //                                all other states than above     illegal
+    //
+    // ^1: AT and XT_IBM takes same state.
+    // ^2: AT and XT_IBM takes same state in case that AT b0 is 1,
+    // we have to check AT stop bit to discriminate between the two protocol.
+    switch (isr_state & 0xFF) {
+        case 0b00000000:
+        case 0b10000000:
+        case 0b01000000:    // ^1
+        case 0b00100000:
+            // midway
+            goto NEXT;
+            break;
+        case 0b11000000:    // ^3
+            {
+                uint8_t us = 100;
+                // wait for rising and falling edge of b7 of XT_IBM
+                while (!(IBMPC_CLOCK_PIN&(1<<IBMPC_CLOCK_BIT)) && us) { wait_us(1); us--; }
+                while (  IBMPC_CLOCK_PIN&(1<<IBMPC_CLOCK_BIT)  && us) { wait_us(1); us--; }
+
+                if (us) {
+                    // XT_IBM-error: read start(0) as 1
+                    goto NEXT;
+                } else {
+                    // XT_Clone-done
+                    ibmpc_isr_debug = isr_state;
+                    isr_state = isr_state>>8;
+                    ibmpc_protocol = IBMPC_PROTOCOL_XT_CLONE;
+                    goto DONE;
                 }
-                ibmpc_error = IBMPC_ERR_NONE;
-                goto DONE;
             }
             break;
-        case PARITY:
-            if (data_in()) {
-                if (!(parity & 0x01))
-                    goto ERROR;
-            } else {
-                if (parity & 0x01)
-                    goto ERROR;
-            }
-            break;
-        case STOP:
-            if (!data_in())
-                goto ERROR;
-            if (!ringbuf_put(&rb, data)) {
-                ibmpc_error = IBMPC_ERR_FULL;
-                goto ERROR;
-            }
-            ibmpc_error = IBMPC_ERR_NONE;
+        case 0b11100000:
+            // XT_IBM-error-done
+            ibmpc_isr_debug = isr_state;
+            isr_state = isr_state>>8;
+            ibmpc_protocol = IBMPC_PROTOCOL_XT_ERROR;
             goto DONE;
             break;
-        default:
+        case 0b10100000:    // ^2
+            {
+                uint8_t us = 100;
+                // wait for rising and falling edge of AT stop bit to discriminate between XT and AT
+                while (!(IBMPC_CLOCK_PIN&(1<<IBMPC_CLOCK_BIT)) && us) { wait_us(1); us--; }
+                while (  IBMPC_CLOCK_PIN&(1<<IBMPC_CLOCK_BIT)  && us) { wait_us(1); us--; }
+
+                if (us) {
+                    // found stop bit: AT-midway - process the stop bit in next ISR
+                    goto NEXT;
+                } else {
+                    // no stop bit: XT_IBM-done
+                    ibmpc_isr_debug = isr_state;
+                    isr_state = isr_state>>8;
+                    ibmpc_protocol = IBMPC_PROTOCOL_XT_IBM;
+                    goto DONE;
+                }
+             }
+            break;
+        case 0b00010000:
+        case 0b10010000:
+        case 0b01010000:
+        case 0b11010000:
+            // AT-done
+            // TODO: parity check?
+            ibmpc_isr_debug = isr_state;
+            // stop bit check
+            if (isr_state & 0x8000) {
+                ibmpc_protocol = IBMPC_PROTOCOL_AT;
+            } else {
+                // Zenith Z-150 AT(beige/white lable) asserts stop bit as low
+                // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#zenith-z-150-beige
+                ibmpc_protocol = IBMPC_PROTOCOL_AT_Z150;
+            }
+            isr_state = isr_state>>6;
+            goto DONE;
+            break;
+        case 0b01100000:
+        case 0b00110000:
+        case 0b10110000:
+        case 0b01110000:
+        case 0b11110000:
+        default:            // xxxx_oooo(any 1 in low nibble)
+            // Illegal
+            ibmpc_isr_debug = isr_state;
+            ibmpc_error = IBMPC_ERR_ILLEGAL;
             goto ERROR;
+            break;
     }
-    goto NEXT;
 
 ERROR:
-    ibmpc_error |= state;
-    ibmpc_error |= IBMPC_ERR_RECV;
-    ringbuf_reset(&rb);
+    // error: eeFF
+    recv_data = (ibmpc_error<<8) | 0x00FF;
+    goto CLEAR;
 DONE:
-    last_time = 0;
-    state = START;
-    data = 0;
-    parity = 1;
-    return;
+    if ((isr_state & 0x00FF) == 0x00FF) {
+        // receive error code 0xFF
+        ibmpc_error = IBMPC_ERR_FF;
+        goto ERROR;
+    }
+    if (HI8(recv_data) != 0xFF && LO8(recv_data) != 0xFF) {
+        // buffer full
+        ibmpc_error = IBMPC_ERR_FULL;
+        goto ERROR;
+    }
+    // store data
+    recv_data = recv_data<<8;
+    recv_data |= isr_state & 0xFF;
+CLEAR:
+    // clear for next data
+    isr_state = 0x8000;
 NEXT:
-    state++;
     return;
 }
 
 /* send LED state to keyboard */
 void ibmpc_host_set_led(uint8_t led)
 {
-    ibmpc_host_send(0xED);
-    ibmpc_host_send(led);
+    if (0xFA == ibmpc_host_send(0xED)) {
+        ibmpc_host_send(led);
+    }
 }

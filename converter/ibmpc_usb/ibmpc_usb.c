@@ -1,5 +1,5 @@
 /*
-Copyright 2019 Jun Wako <wakojun@gmail.com>
+Copyright 2019,2020 Jun Wako <wakojun@gmail.com>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -27,14 +27,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "timer.h"
 #include "action.h"
 #include "ibmpc_usb.h"
+#include "ibmpc.h"
 
 
 static void matrix_make(uint8_t code);
 static void matrix_break(uint8_t code);
 
-static int8_t process_cs1(void);
-static int8_t process_cs2(void);
-static int8_t process_cs3(void);
+static int8_t process_cs1(uint8_t code);
+static int8_t process_cs2(uint8_t code);
+static int8_t process_cs3(uint8_t code);
 
 
 static uint8_t matrix[MATRIX_ROWS];
@@ -54,34 +55,42 @@ static uint16_t read_keyboard_id(void)
     uint16_t id = 0;
     int16_t  code = 0;
 
+    // temporary fix Z-150 AT should response with ID
+    if (ibmpc_protocol == IBMPC_PROTOCOL_AT_Z150) return 0xFFFD;
+
     // Disable
-    code = ibmpc_host_send(0xF5);
+    //code = ibmpc_host_send(0xF5);
 
     // Read ID
     code = ibmpc_host_send(0xF2);
-    if (code == -1)  return 0xFFFF;     // XT or No keyboard
-    if (code != 0xFA) return 0xFFFE;    // Broken PS/2?
+    if (code == -1) { id = 0xFFFF; goto DONE; }     // XT or No keyboard
+    if (code != 0xFA) { id = 0xFFFE; goto DONE; }   // Broken PS/2?
 
-    code = read_wait(1000);
-    if (code == -1)  return 0x0000;     // AT
+    // ID takes 500ms max TechRef [8] 4-41
+    code = read_wait(500);
+    if (code == -1) { id = 0x0000; goto DONE; }     // AT
     id = (code & 0xFF)<<8;
 
-    code = read_wait(1000);
+    // Mouse responds with one-byte 00, this returns 00FF [y] p.14
+    code = read_wait(500);
     id |= code & 0xFF;
 
+DONE:
     // Enable
-    code = ibmpc_host_send(0xF4);
+    //code = ibmpc_host_send(0xF4);
 
     return id;
+}
+
+void hook_early_init(void)
+{
+    ibmpc_host_init();
+    ibmpc_host_enable();
 }
 
 void matrix_init(void)
 {
     debug_enable = true;
-    ibmpc_host_init();
-
-    // hard reset for XT keyboard
-    IBMPC_RESET();
 
     // initialize matrix state: all keys off
     for (uint8_t i=0; i < MATRIX_ROWS; i++) matrix[i] = 0x00;
@@ -99,6 +108,7 @@ void matrix_init(void)
  *      d. ID is BF BF: Terminal keyboard CodeSet3
  *      e. error on recv: maybe broken PS/2
  */
+uint8_t current_protocol = 0;
 uint16_t keyboard_id = 0x0000;
 keyboard_kind_t keyboard_kind = NONE;
 uint8_t matrix_scan(void)
@@ -106,112 +116,263 @@ uint8_t matrix_scan(void)
     // scan code reading states
     static enum {
         INIT,
-        WAIT_STARTUP,
+        WAIT_SETTLE,
+        AT_RESET,
+        XT_RESET,
+        XT_RESET_WAIT,
+        XT_RESET_DONE,
+        WAIT_AA,
+        WAIT_AABF,
+        WAIT_AABFBF,
         READ_ID,
-        LED_SET,
+        SETUP,
         LOOP,
-        END
     } state = INIT;
-    static uint16_t last_time;
+    static uint16_t init_time;
 
 
     if (ibmpc_error) {
-        xprintf("err: %02X\n", ibmpc_error);
+        xprintf("\nERR:%02X ISR:%04X ", ibmpc_error, ibmpc_isr_debug);
 
         // when recv error, neither send error nor buffer full
         if (!(ibmpc_error & (IBMPC_ERR_SEND | IBMPC_ERR_FULL))) {
             // keyboard init again
             if (state == LOOP) {
-                xprintf("init\n");
+                xprintf("[RST] ");
                 state = INIT;
             }
         }
 
         // clear or process error
         ibmpc_error = IBMPC_ERR_NONE;
+        ibmpc_isr_debug = 0;
+    }
+
+    // check protocol change AT/XT
+    if (ibmpc_protocol && ibmpc_protocol != current_protocol) {
+        xprintf("\nPRT:%02X ISR:%04X ", ibmpc_protocol, ibmpc_isr_debug);
+
+        // protocol change between AT and XT indicates that
+        // keyboard is hotswapped or something goes wrong.
+        // This requires initializing keyboard again probably.
+        if (((current_protocol&IBMPC_PROTOCOL_XT) && (ibmpc_protocol&IBMPC_PROTOCOL_AT)) ||
+            ((current_protocol&IBMPC_PROTOCOL_AT) && (ibmpc_protocol&IBMPC_PROTOCOL_XT))) {
+            if (state == LOOP) {
+                xprintf("[CHG] ");
+                state = INIT;
+            }
+        }
+
+        current_protocol = ibmpc_protocol;
+        ibmpc_isr_debug = 0;
     }
 
     switch (state) {
         case INIT:
-            ibmpc_protocol = IBMPC_PROTOCOL_AT;
+            ibmpc_host_disable();
+
+            xprintf("I%u ", timer_read());
             keyboard_kind = NONE;
             keyboard_id = 0x0000;
-            last_time = timer_read();
-            state = WAIT_STARTUP;
+            current_protocol = 0;
+
             matrix_clear();
             clear_keyboard();
+
+            init_time = timer_read();
+            state = WAIT_SETTLE;
             break;
-        case WAIT_STARTUP:
-            // read and ignore BAT code and other codes when power-up
-            ibmpc_host_recv();
-            if (timer_elapsed(last_time) > 1000) {
+        case WAIT_SETTLE:
+            // wait for keyboard to settle after plugin
+            if (timer_elapsed(init_time) > 1000) {
+                state = AT_RESET;
+            }
+            break;
+        case AT_RESET:
+            ibmpc_host_isr_clear();
+            ibmpc_host_enable();
+            wait_ms(1); // keyboard can't respond to command without this
+
+            // SKIDATA-2-DE(and some other keyboards?) stores 'Code Set' setting in nonvlatile memory
+            // and keeps it until receiving reset. Sending reset here may be useful to clear it, perhaps.
+            // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#select-alternate-scan-codesf0
+
+            // reset command
+            if (0xFA == ibmpc_host_send(0xFF)) {
+                state = WAIT_AA;
+            } else {
+                state = XT_RESET;
+            }
+            xprintf("A%u ", timer_read());
+            break;
+        case XT_RESET:
+            // Reset XT-initialize keyboard
+            // XT: hard reset 500ms for IBM XT Type-1 keyboard and clones
+            // XT: soft reset 20ms min
+            // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-XT-Keyboard-Protocol#keyboard-soft-reset
+            ibmpc_host_disable();   // soft reset: Clock Lo/Data Hi
+            IBMPC_RST_LO();         // hard reset: Reset pin Lo
+
+            init_time = timer_read();
+            state = XT_RESET_WAIT;
+            break;
+        case XT_RESET_WAIT:
+            if (timer_elapsed(init_time) > 500) {
+                state = XT_RESET_DONE;
+            }
+            break;
+        case XT_RESET_DONE:
+            IBMPC_RST_HIZ();        // hard reset: Reset pin HiZ
+            ibmpc_host_isr_clear();
+            ibmpc_host_enable();    // soft reset: idle(Clock Hi/Data Hi)
+
+            xprintf("X%u ", timer_read());
+            init_time = timer_read();
+            state = WAIT_AA;
+            break;
+        case WAIT_AA:
+            // 1) Read BAT code and ID on keybaord power-up
+            // For example, XT/AT sends 'AA' and Terminal sends 'AA BF BF' after BAT
+            // AT 84-key: POR and BAT can take 900-9900ms according to AT TechRef [8] 4-7
+            // AT 101/102-key: POR and BAT can take 450-2500ms according to AT TechRef [8] 4-39
+            // 2) Read key typed by user or anything after error on protocol or scan code
+            // This can happen in case of keyboard hotswap, unstable hardware, signal integrity problem or bug
+
+            /* wait until keyboard sends any code without 10000ms timeout
+            if (timer_elapsed(init_time) > 10000) {
+                state = READ_ID;
+            }
+            */
+            if (ibmpc_host_recv() != -1) {  // wait for AA
+                xprintf("W%u ", timer_read());
+                init_time = timer_read();
+                state = WAIT_AABF;
+            }
+            break;
+        case WAIT_AABF:
+            // NOTE: we can omit to wait BF BF
+            // ID takes 500ms max? TechRef [8] 4-41, though 1ms is enough for 122-key Terminal 6110345
+            if (timer_elapsed(init_time) > 500) {
+                state = READ_ID;
+            }
+            if (ibmpc_host_recv() != -1) {  // wait for BF
+                xprintf("W%u ", timer_read());
+                init_time = timer_read();
+                state = WAIT_AABFBF;
+            }
+            break;
+        case WAIT_AABFBF:
+            if (timer_elapsed(init_time) > 500) {
+                state = READ_ID;
+            }
+            if (ibmpc_host_recv() != -1) {  // wait for BF
+                xprintf("W%u ", timer_read());
                 state = READ_ID;
             }
             break;
         case READ_ID:
             keyboard_id = read_keyboard_id();
-            if (ibmpc_error) {
-                xprintf("err: %02X\n", ibmpc_error);
-                ibmpc_error = IBMPC_ERR_NONE;
-            }
-            xprintf("ID: %04X\n", keyboard_id);
-            if (0xAB00 == (keyboard_id & 0xFF00)) {
-                // CodeSet2 PS/2
+            xprintf("R%u ", timer_read());
+
+            if (0x0000 == keyboard_id) {            // CodeSet2 AT(IBM PC AT 84-key)
                 keyboard_kind = PC_AT;
-            } else if (0xBF00 == (keyboard_id & 0xFF00)) {
-                // CodeSet3 Terminal
-                keyboard_kind = PC_TERMINAL;
-            } else if (0x0000 == keyboard_id) {
-                // CodeSet2 AT
-                keyboard_kind = PC_AT;
-            } else if (0xFFFF == keyboard_id) {
-                // CodeSet1 XT
+            } else if (0xFFFF == keyboard_id) {     // CodeSet1 XT
                 keyboard_kind = PC_XT;
-            } else if (0xFFFE == keyboard_id) {
-                // CodeSet2 PS/2 fails to response?
+            } else if (0xFFFE == keyboard_id) {     // CodeSet2 PS/2 fails to response?
                 keyboard_kind = PC_AT;
-            } else if (0x00FF == keyboard_id) {
-                // Mouse is not supported
+            } else if (0xFFFD == keyboard_id) {     // Zenith Z-150 AT
+                keyboard_kind = PC_AT_Z150;
+            } else if (0x00FF == keyboard_id) {     // Mouse is not supported
                 xprintf("Mouse: not supported\n");
                 keyboard_kind = NONE;
+#ifdef G80_2551_SUPPORT
+            } else if (0xAB86 == keyboard_id ||
+                       0xAB85 == keyboard_id) {     // For G80-2551 and other 122-key terminal
+                // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#ab86
+                // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#ab85
+
+                if ((0xFA == ibmpc_host_send(0xF0)) &&
+                    (0xFA == ibmpc_host_send(0x03))) {
+                    // switch to code set 3
+                    keyboard_kind = PC_TERMINAL;
+                } else {
+                    keyboard_kind = PC_AT;
+                }
+#endif
+            } else if (0xBFB0 == keyboard_id) {     // IBM RT Keyboard
+                // https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#bfb0
+                // TODO: LED indicator fix
+                //keyboard_kind = PC_TERMINAL_IBM_RT;
+                keyboard_kind = PC_TERMINAL;
+            } else if (0xAB00 == (keyboard_id & 0xFF00)) {  // CodeSet2 PS/2
+                keyboard_kind = PC_AT;
+            } else if (0xBF00 == (keyboard_id & 0xFF00)) {  // CodeSet3 Terminal
+                keyboard_kind = PC_TERMINAL;
             } else {
                 keyboard_kind = PC_AT;
             }
 
-            // protocol
-            if (keyboard_kind == PC_XT) {
-                xprintf("kbd: XT\n");
-                ibmpc_protocol = IBMPC_PROTOCOL_XT;
-            } else if (keyboard_kind == PC_AT) {
-                xprintf("kbd: AT\n");
-                ibmpc_protocol = IBMPC_PROTOCOL_AT;
-            } else if (keyboard_kind == PC_TERMINAL) {
-                xprintf("kbd: Terminal\n");
-                ibmpc_protocol = IBMPC_PROTOCOL_AT;
-                // Set all keys - make/break [3]p.23
-                ibmpc_host_send(0xF8);
-            } else {
-                xprintf("kbd: Unknown\n");
-                ibmpc_protocol = IBMPC_PROTOCOL_AT;
-            }
-            state = LED_SET;
+            xprintf("\nID:%04X(%s) ", keyboard_id, KEYBOARD_KIND_STR(keyboard_kind));
+
+            state = SETUP;
             break;
-        case LED_SET:
-            led_set(host_keyboard_leds());
-            state = LOOP;
-        case LOOP:
+        case SETUP:
+            xprintf("S%u ", timer_read());
             switch (keyboard_kind) {
                 case PC_XT:
-                    process_cs1();
                     break;
                 case PC_AT:
-                    process_cs2();
+                    led_set(host_keyboard_leds());
+                    break;
+                case PC_AT_Z150:
+                    // TODO: do not set indicators temporarily for debug
                     break;
                 case PC_TERMINAL:
-                    process_cs3();
+                    // Set all keys to make/break type
+                    ibmpc_host_send(0xF8);
+                    // This should not be harmful
+                    led_set(host_keyboard_leds());
                     break;
                 default:
                     break;
+            }
+            state = LOOP;
+            xprintf("L%u ", timer_read());
+        case LOOP:
+            {
+                uint16_t code = ibmpc_host_recv();
+                if (code == -1) {
+                    // no code
+                    break;
+                }
+
+                // Keyboard Error/Overrun([3]p.26) or Buffer full
+                // Scan Code Set 1: 0xFF
+                // Scan Code Set 2 and 3: 0x00
+                // Buffer full(IBMPC_ERR_FULL): 0xFF
+                if (code == 0x00 || code == 0xFF) {
+                    // clear stuck keys
+                    matrix_clear();
+                    clear_keyboard();
+
+                    xprintf("\n[OVR] ");
+                    break;
+                }
+
+                switch (keyboard_kind) {
+                    case PC_XT:
+                        if (process_cs1(code) == -1) state = INIT;
+                        break;
+                    case PC_AT:
+                    case PC_AT_Z150:
+                        if (process_cs2(code) == -1) state = INIT;
+                        break;
+                    case PC_TERMINAL:
+                        if (process_cs3(code) == -1) state = INIT;
+                        break;
+                    default:
+                        break;
+                }
             }
             break;
         default:
@@ -265,8 +426,19 @@ void matrix_clear(void)
 
 void led_set(uint8_t usb_led)
 {
-    if (keyboard_kind != PC_AT) return;
+    // Sending before keyboard recognition may be harmful for XT keyboard
+    if (keyboard_kind == NONE) return;
 
+    // XT keyobard doesn't support any command and it is harmful perhaps
+    // https://github.com/tmk/tmk_keyboard/issues/635#issuecomment-626993437
+    if (keyboard_kind == PC_XT) return;
+
+    // It should be safe to send the command to keyboards with AT protocol
+    // - IBM Terminal doesn't support the command and response with 0xFE but it is not harmful.
+    // - Some other Terminals like G80-2551 supports the command.
+    //   https://geekhack.org/index.php?topic=103648.msg2894921#msg2894921
+
+    // TODO: PC_TERMINAL_IBM_RT support
     uint8_t ibmpc_led = 0;
     if (usb_led &  (1<<USB_LED_SCROLL_LOCK))
         ibmpc_led |= (1<<IBMPC_LED_SCROLL_LOCK);
@@ -349,27 +521,22 @@ static uint8_t cs1_e0code(uint8_t code) {
         case 0x63: return 0x7B; // Wake  (MUHENKAN)
 
         default:
-           xprintf("!CS1_?!\n");
+           xprintf("!CS1_E0_%02X!\n", code);
            return code;
     }
     return 0x00;
 }
 
-static int8_t process_cs1(void)
+static int8_t process_cs1(uint8_t code)
 {
     static enum {
         INIT,
         E0,
-        // Pause: E1 1D 45, E1 9D C5
+        // Pause: E1 1D 45, E1 9D C5 [a]
         E1,
         E1_1D,
         E1_9D,
     } state = INIT;
-
-    uint16_t code = ibmpc_host_recv();
-    if (code == -1) {
-        return 0;
-    }
 
     switch (state) {
         case INIT:
@@ -422,7 +589,8 @@ static int8_t process_cs1(void)
         case E1_1D:
             switch (code) {
                 case 0x45:
-                    matrix_make(0x55);
+                    matrix_make(0x55); // Pause
+                    state = INIT;
                     break;
                 default:
                     state = INIT;
@@ -431,8 +599,9 @@ static int8_t process_cs1(void)
             break;
         case E1_9D:
             switch (code) {
-                case 0x45:
-                    matrix_break(0x55);
+                case 0xC5:
+                    matrix_break(0x55); // Pause
+                    state = INIT;
                     break;
                 default:
                     state = INIT;
@@ -530,12 +699,12 @@ static uint8_t cs2_e0code(uint8_t code) {
         case 0x75: return 0x4F; // cursor up
         case 0x7A: return 0x56; // page down
         case 0x7D: return 0x5E; // page up
-        case 0x7C: return 0x6F; // Print Screen
+        case 0x7C: return 0x7F; // Print Screen
         case 0x7E: return 0x00; // Control'd Pause
 
         case 0x21: return 0x65; // volume down
         case 0x32: return 0x6E; // volume up
-        case 0x23: return 0x7F; // mute
+        case 0x23: return 0x6F; // mute
         case 0x10: return 0x08; // (WWW search)     -> F13
         case 0x18: return 0x10; // (WWW favourites) -> F14
         case 0x20: return 0x18; // (WWW refresh)    -> F15
@@ -567,7 +736,7 @@ static uint8_t cs2_e0code(uint8_t code) {
     }
 }
 
-static int8_t process_cs2(void)
+static int8_t process_cs2(uint8_t code)
 {
     // scan code reading states
     static enum {
@@ -582,11 +751,6 @@ static int8_t process_cs2(void)
         E1_F0_14,
         E1_F0_14_F0,
     } state = INIT;
-
-    uint16_t code = ibmpc_host_recv();
-    if (code == -1) {
-        return 0;
-    }
 
     switch (state) {
         case INIT:
@@ -605,28 +769,21 @@ static int8_t process_cs2(void)
                     state = INIT;
                     break;
                 case 0x84:  // Alt'd PrintScreen
-                    matrix_make(0x6F);
-                    state = INIT;
-                    break;
-                case 0x00:  // Overrun [3]p.26
-                    matrix_clear();
-                    xprintf("!CS2_OVERRUN!\n");
+                    matrix_make(0x7F);
                     state = INIT;
                     break;
                 case 0xAA:  // Self-test passed
                 case 0xFC:  // Self-test failed
-                    // reset or plugin-in new keyboard
-                    state = INIT;
-                    return -1;
-                    break;
+                    // replug or unstable connection probably
                 default:    // normal key make
+                    state = INIT;
                     if (code < 0x80) {
                         matrix_make(code);
                     } else {
                         matrix_clear();
                         xprintf("!CS2_INIT!\n");
+                        return -1;
                     }
-                    state = INIT;
             }
             break;
         case E0:    // E0-Prefixed
@@ -639,13 +796,14 @@ static int8_t process_cs2(void)
                     state = E0_F0;
                     break;
                 default:
+                    state = INIT;
                     if (code < 0x80) {
                         matrix_make(cs2_e0code(code));
                     } else {
                         matrix_clear();
                         xprintf("!CS2_E0!\n");
+                        return -1;
                     }
-                    state = INIT;
             }
             break;
         case F0:    // Break code
@@ -655,17 +813,18 @@ static int8_t process_cs2(void)
                     state = INIT;
                     break;
                 case 0x84:  // Alt'd PrintScreen
-                    matrix_break(0x6F);
+                    matrix_break(0x7F);
                     state = INIT;
                     break;
                 default:
+                    state = INIT;
                     if (code < 0x80) {
                         matrix_break(code);
                     } else {
                         matrix_clear();
                         xprintf("!CS2_F0!\n");
+                        return -1;
                     }
-                    state = INIT;
             }
             break;
         case E0_F0: // Break code of E0-prefixed
@@ -675,13 +834,14 @@ static int8_t process_cs2(void)
                     state = INIT;
                     break;
                 default:
+                    state = INIT;
                     if (code < 0x80) {
                         matrix_break(cs2_e0code(code));
                     } else {
                         matrix_clear();
                         xprintf("!CS2_E0_F0!\n");
+                        return -1;
                     }
-                    state = INIT;
             }
             break;
         // Pause make: E1 14 77
@@ -745,71 +905,161 @@ static int8_t process_cs2(void)
 /*
  * Terminal: Scan Code Set 3
  *
- * See [3], [7]
- *
- * Scan code 0x83 and 0x84 are handled exceptioanally to fit into 1-byte range index.
+ * See [3], [7] and
+ * https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#scan-code-set-3
  */
-static int8_t process_cs3(void)
+static int8_t process_cs3(uint8_t code)
 {
     static enum {
         READY,
         F0,
+#ifdef G80_2551_SUPPORT
+        // G80-2551 four extra keys around cursor keys
+        G80,
+        G80_F0,
+#endif
     } state = READY;
-
-    uint16_t code = ibmpc_host_recv();
-    if (code == -1) {
-        return 0;
-    }
 
     switch (state) {
         case READY:
             switch (code) {
-                case 0x00:
-                case 0xff:
-                    xprintf("!CS3_%02X!\n", code);
-                    break;
                 case 0xF0:
                     state = F0;
                     break;
-                case 0x83:  // F7
+                case 0x83:  // PrintScreen
                     matrix_make(0x02);
                     break;
-                case 0x84:  // keypad -
+                case 0x84:  // Keypad *
                     matrix_make(0x7F);
                     break;
+                case 0x85:  // Muhenkan
+                    matrix_make(0x0B);
+                    break;
+                case 0x86:  // Henkan
+                    matrix_make(0x06);
+                    break;
+                case 0x87:  // Hiragana
+                    matrix_make(0x00);
+                    break;
+                case 0x8B:  // Left GUI
+                    matrix_make(0x01);
+                    break;
+                case 0x8C:  // Right GUI
+                    matrix_make(0x09);
+                    break;
+                case 0x8D:  // Application
+                    matrix_make(0x0A);
+                    break;
+#ifdef G80_2551_SUPPORT
+                case 0x80:  // G80-2551 four extra keys around cursor keys
+                    state = G80;
+                    break;
+#endif
                 default:    // normal key make
                     if (code < 0x80) {
                         matrix_make(code);
                     } else {
-                        xprintf("!CS3_%02X!\n", code);
+                        xprintf("!CS3_READY!\n");
+                        return -1;
                     }
-                    state = READY;
             }
             break;
         case F0:    // Break code
             switch (code) {
-                case 0x00:
-                case 0xff:
-                    xprintf("!CS3_F0_%02X!\n", code);
-                    state = READY;
-                    break;
-                case 0x83:  // F7
+                case 0x83:  // PrintScreen
                     matrix_break(0x02);
                     state = READY;
                     break;
-                case 0x84:  // keypad -
+                case 0x84:  // Keypad *
                     matrix_break(0x7F);
                     state = READY;
                     break;
+                case 0x85:  // Muhenkan
+                    matrix_break(0x0B);
+                    state = READY;
+                    break;
+                case 0x86:  // Henkan
+                    matrix_break(0x06);
+                    state = READY;
+                    break;
+                case 0x87:  // Hiragana
+                    matrix_break(0x00);
+                    state = READY;
+                    break;
+                case 0x8B:  // Left GUI
+                    matrix_break(0x01);
+                    state = READY;
+                    break;
+                case 0x8C:  // Right GUI
+                    matrix_break(0x09);
+                    state = READY;
+                    break;
+                case 0x8D:  // Application
+                    matrix_break(0x0A);
+                    state = READY;
+                    break;
                 default:
+                    state = READY;
                     if (code < 0x80) {
                         matrix_break(code);
                     } else {
-                        xprintf("!CS3_F0_%02X!\n", code);
+                        xprintf("!CS3_F0!\n");
+                        return -1;
                     }
-                    state = READY;
             }
             break;
+#ifdef G80_2551_SUPPORT
+        /*
+         * G80-2551 terminal keyboard support
+         * https://deskthority.net/wiki/Cherry_G80-2551
+         * https://github.com/tmk/tmk_keyboard/wiki/IBM-PC-AT-Keyboard-Protocol#g80-2551-in-code-set-3
+         */
+        case G80:   // G80-2551 four extra keys around cursor keys
+            switch (code) {
+                case (0x26):    // TD= -> JYEN
+                    matrix_make(0x5D);
+                    break;
+                case (0x25):    // page with edge -> NUHS
+                    matrix_make(0x53);
+                    break;
+                case (0x16):    // two pages -> RO
+                    matrix_make(0x51);
+                    break;
+                case (0x1E):    // calc -> KANA
+                    matrix_make(0x00);
+                    break;
+                case (0xF0):
+                    state = G80_F0;
+                    return 0;
+                default:
+                    // Not supported
+                    matrix_clear();
+                    break;
+            }
+            state = READY;
+            break;
+        case G80_F0:
+            switch (code) {
+                case (0x26):    // TD= -> JYEN
+                    matrix_break(0x5D);
+                    break;
+                case (0x25):    // page with edge -> NUHS
+                    matrix_break(0x53);
+                    break;
+                case (0x16):    // two pages -> RO
+                    matrix_break(0x51);
+                    break;
+                case (0x1E):    // calc -> KANA
+                    matrix_break(0x00);
+                    break;
+                default:
+                    // Not supported
+                    matrix_clear();
+                    break;
+            }
+            state = READY;
+            break;
+#endif
     }
     return 0;
 }
@@ -843,6 +1093,9 @@ static int8_t process_cs3(void)
  *
  * [7] The IBM 6110344 Keyboard - Scan Code Set 3 of 122-key terminal keyboard
  * https://www.seasip.info/VintagePC/ibm_6110344.html
+ *
+ * [8] IBM PC AT Technical Reference 1986
+ * http://bitsavers.org/pdf/ibm/pc/at/6183355_PC_AT_Technical_Reference_Mar86.pdf
  *
  * [y] TrackPoint Engineering Specifications for version 3E
  * https://web.archive.org/web/20100526161812/http://wwwcssrv.almaden.ibm.com/trackpoint/download.html

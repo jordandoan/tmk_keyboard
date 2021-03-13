@@ -39,7 +39,7 @@ static bool has_media_keys = false;
 static bool is_iso_layout = false;
 
 #if ADB_MOUSE_ENABLE
-#define dmprintf(fmt, ...)  do { if (debug_mouse) xprintf(fmt, ##__VA_ARGS__); } while (0)
+#define dmprintf(fmt, ...)  do { /* if (debug_mouse) */ xprintf("M:" fmt, ##__VA_ARGS__); } while (0)
 static uint16_t mouse_cpi = 100;
 static void mouse_init(uint8_t addr);
 #endif
@@ -72,8 +72,13 @@ void matrix_init(void)
 
     adb_host_init();
 
-    // wait for line and device to be stable
-    wait_ms(100);
+    // AEK/AEKII(ANSI/ISO) startup is slower. Without proper delay
+    // it would fail to recognize layout and enable Extended protocol.
+    // 200ms seems to be enough for AEKs. 1000ms is used for safety.
+    // Tested with devices:
+    // M0115J(AEK), M3501(AEKII), M0116(Standard), M1242(Adjustable),
+    // G5431(Mouse), 64210(Kensington Trubo Mouse 5)
+    wait_ms(1000);
 
     device_scan();
 
@@ -94,7 +99,7 @@ void matrix_init(void)
         is_iso_layout = false;
         break;
     }
-    xprintf("hadler: %02X, ISO: %s\n", handler_id, (is_iso_layout ? "yes" : "no"));
+    xprintf("handler: %02X, ISO: %s\n", handler_id, (is_iso_layout ? "yes" : "no"));
 
     // Adjustable keyboard media keys: address=0x07 and handlerID=0x02
     has_media_keys = (0x02 == (adb_host_talk(ADB_ADDR_APPLIANCE, ADB_REG_3) & 0xff));
@@ -108,24 +113,12 @@ void matrix_init(void)
     //  lower byte: device handler 00000011
     adb_host_listen(ADB_ADDR_KEYBOARD, ADB_REG_3, ADB_ADDR_KEYBOARD, ADB_HANDLER_EXTENDED_KEYBOARD);
 
-
-    //
-    // Mouse
-    //
-    // https://developer.apple.com/library/archive/technotes/hw/hw_01.html#Extended
-    #ifdef ADB_MOUSE_ENABLE
-    xprintf("\nMouse:\n");
-
-    // Check device on addr3
-    mouse_init(ADB_ADDR_MOUSE);
-    #endif
-
-    device_scan();
-
     // initialize matrix state: all keys off
     for (uint8_t i=0; i < MATRIX_ROWS; i++) matrix[i] = 0x00;
 
     led_set(host_keyboard_leds());
+
+    device_scan();
 
     // LED off
     DDRD |= (1<<6); PORTD &= ~(1<<6);
@@ -140,9 +133,10 @@ static void mouse_init(uint8_t orig_addr)
     uint8_t addr;
 
 again:
+    // Move to tmp address 15 to setup mouse function
     mouse_handler = (reg3  = adb_host_talk(orig_addr, ADB_REG_3)) & 0xFF;
     if (!reg3) return;
-    dmprintf("addr%d reg3: %02X\n", orig_addr, reg3);
+    dmprintf("addr%d reg3: %04X\n", orig_addr, reg3);
 
     // Move device to tmp address
     adb_host_flush(orig_addr);
@@ -155,10 +149,10 @@ again:
         goto again;
     }
     addr = ADB_ADDR_TMP;
-    dmprintf("addr%d reg3: %02X\n", addr, reg3);
 
 
 detect_again:
+    // Try to escalate into extended/classic2 protocol
     if (mouse_handler == ADB_HANDLER_CLASSIC1_MOUSE || mouse_handler == ADB_HANDLER_CLASSIC2_MOUSE) {
         adb_host_flush(addr);
         adb_host_listen(addr, ADB_REG_3, (reg3 >> 8), ADB_HANDLER_EXTENDED_MOUSE);
@@ -172,15 +166,20 @@ detect_again:
 
             mouse_handler = (reg3  = adb_host_talk(addr, ADB_REG_3)) & 0xFF;
         }
+        dmprintf("addr%d reg3: %04X\n", addr, reg3);
 
-        if (mouse_handler == ADB_HANDLER_CLASSIC1_MOUSE) {
-            xprintf("Classic 100cpi\n");
-            mouse_cpi = 100;
-        }
-        if (mouse_handler == ADB_HANDLER_CLASSIC2_MOUSE) {
-            xprintf("Classic 200cpi\n");
-            mouse_cpi = 200;
-        }
+    }
+
+    // Classic Protocol 100cpi
+    if (mouse_handler == ADB_HANDLER_CLASSIC1_MOUSE) {
+        xprintf("Classic 100cpi\n");
+        mouse_cpi = 100;
+    }
+
+    // Classic Protocol 200cpi
+    if (mouse_handler == ADB_HANDLER_CLASSIC2_MOUSE) {
+        xprintf("Classic 200cpi\n");
+        mouse_cpi = 200;
     }
 
     // Extended Mouse Protocol
@@ -225,6 +224,7 @@ detect_again:
         }
     }
 
+    // Kensington Turbo Mouse 5: setup
     if (mouse_handler == ADB_HANDLER_TURBO_MOUSE) {
         xprintf("TM5: ext\n");
 
@@ -241,7 +241,7 @@ detect_again:
     }
 
 
-    // Move all mouses to a address after init to be polled
+    // Move to address 10 for mouse polling
     adb_host_flush(addr);
     adb_host_listen(addr, ADB_REG_3, ((reg3 >> 8) & 0xF0) | ADB_ADDR_MOUSE_POLL, 0xFE);
     adb_host_flush(ADB_ADDR_MOUSE_POLL);
@@ -253,9 +253,6 @@ detect_again:
     }
 
     goto again;
-
-//    dmprintf("handler: %d\n", mouse_handler);
-//    dmprintf("cpi: %d\n", mouse_cpi);
 }
 
 #ifdef MAX
@@ -305,6 +302,7 @@ void adb_mouse_task(void)
         mouseacc = 1;
         return;
     };
+    dmprintf("[%02X %02X %02X %02X %02X]\n", buf[0], buf[1], buf[2], buf[3], buf[4]);
 
     // Store off-buttons and 0-movements in unused bytes
     bool xneg = false;
@@ -351,12 +349,7 @@ void adb_mouse_task(void)
     mouse_report.x = -MAX(-MAX(x, -127), -127);
     mouse_report.y = -MAX(-MAX(y, -127), -127);
 
-    if (debug_mouse) {
-        xprintf("Mouse: [");
-        for (int8_t i = 0; i < len; i++) xprintf("%02X ", buf[i]);
-        xprintf("] ");
-        xprintf("[B:%02X, X:%d(%d), Y:%d(%d), A:%d]\n", mouse_report.buttons, mouse_report.x, xx, mouse_report.y, yy, mouseacc);
-    }
+    dmprintf("[B:%02X X:%d(%d) Y:%d(%d) A:%d]\n", mouse_report.buttons, mouse_report.x, xx, mouse_report.y, yy, mouseacc);
 
     // Send result by usb.
     host_mouse_send(&mouse_report);
@@ -394,10 +387,12 @@ uint8_t matrix_scan(void)
         tick_ms = timer_read();
 
         codes = adb_host_kbd_recv(ADB_ADDR_KEYBOARD);
+        if (codes) xprintf("%04X ", codes);
 
         // Adjustable keybaord media keys
         if (codes == 0 && has_media_keys &&
                 (codes = adb_host_kbd_recv(ADB_ADDR_APPLIANCE))) {
+            xprintf("m:%04X ", codes);
             // key1
             switch (codes & 0x7f ) {
             case 0x00:  // Mic
@@ -440,10 +435,6 @@ uint8_t matrix_scan(void)
     }
     key0 = codes>>8;
     key1 = codes&0xFF;
-
-    if (debug_matrix && codes) {
-        print("adb_host_kbd_recv: "); phex16(codes); print("\n");
-    }
 
     if (codes == 0) {                           // no keys
         return 0;
@@ -488,15 +479,18 @@ uint8_t matrix_scan(void)
          *         -------------   ---------
          * Key     ANSI    ISO     ANSI    ISO
          * ---------------------------------------------
-         * *a      0x32    0x0A    0x35    0x35
-         * *b      ----    0x32    ----    0x64
-         * *c      0x2A    0x2A    0x31    0x31(or 0x32)
+         * *a      0x32    0x0A    GRAVE   GRAVE
+         * *b      ----    0x32    ----    NUBS
+         * *c      0x2A    0x70    BSLASH  NUHS
          */
         if (is_iso_layout) {
             if ((key0 & 0x7F) == 0x32) {
                 key0 = (key0 & 0x80) | 0x0A;
             } else if ((key0 & 0x7F) == 0x0A) {
                 key0 = (key0 & 0x80) | 0x32;
+            }
+            if ((key0 & 0x7F) == 0x2A) {
+                key0 = (key0 & 0x80) | 0x70;
             }
         }
         register_key(key0);
