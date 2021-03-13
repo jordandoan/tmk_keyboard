@@ -47,12 +47,12 @@ const action_t actionmaps[][UNIMAP_ROWS][UNIMAP_COLS] PROGMEM = {
      * Apple Extended Keyboard can discriminate the modifiers except for Command(GUI) key.
      */
     [0] = UNIMAP_ADB(
-    ESC,      F1,  F2,  F3,  F4,  F5,  F6,  F7,  F8,  F9,  F10, F11, F12,        PSCR,SLCK,PAUS,                 BOOTLOADER,
-    FN0, 1,   2,   3,   4,   5,   6,   7,   8,   9,   0,   MINS,EQL,      BSPC,  INS, HOME,PGUP,  NLCK,FN0, PSLS,PAST,  VOLU,
+    GRV,      F1,  F2,  F3,  F4,  F5,  F6,  F7,  F8,  F9,  F10, F11, F12,        PSCR,SLCK,PAUS,                 BOOTLOADER,
+    ESC, 1,   2,   3,   4,   5,   6,   7,   8,   9,   0,   MINS,EQL,      BSLS,  INS, HOME,PGUP,  NLCK,FN0, PSLS,PAST,  VOLU,
     TAB, Q,   W,   E,   R,   T,   Y,   U,   I,   O,   P,   LBRC,RBRC,     BSPC,   DEL, END, PGDN,  P7,  P8,  P9,  PMNS,  VOLD,
     LCAP,A,   S,   D,   F,   G,   H,   J,   K,   L,   SCLN,QUOT,     NUHS,ENT,                    P4,  P5,  P6,  PPLS,  MUTE,
     LSFT,NUBS,Z,   X,   C,   V,   B,   N,   M,   COMM,DOT, SLSH,          RSFT,       UP,         P1,  P2,  P3,  PENT,
-    LCTL,LALT,LGUI,               SPC,                               RALT,RCTL,  LEFT,DOWN,RGHT,  P0,       PDOT,       MPLY
+    LCTL,LGUI,LALT,               SPC,                               RALT,RCTL,  LEFT,DOWN,RGHT,  P0,       PDOT,       MPLY
     ),
 
     /*

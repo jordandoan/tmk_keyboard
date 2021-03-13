@@ -75,7 +75,7 @@ MOUSEKEY_ENABLE ?= yes		# Mouse keys(+4700)
 EXTRAKEY_ENABLE ?= yes		# Audio control and System control(+450)
 CONSOLE_ENABLE ?= yes		# Console for debug(+400)
 COMMAND_ENABLE ?= yes		# Commands for debug and configuration
-NKRO_ENABLE ?= no		# USB Nkey Rollover
+NKRO_ENABLE = yes		# USB Nkey Rollover
 ADB_MOUSE_ENABLE ?= yes		# ADB Mouse support
 UNIMAP_ENABLE ?= yes		# Use unimap
 ACTIONMAP_ENABLE ?= no          # Use 16bit actionmap instead of 8bit keymap
@@ -105,7 +105,7 @@ endif
 ifdef KEYMAP
     SRC := $(KEYMAP_FILE)_$(KEYMAP).c $(SRC)
 else
-    SRC := $(KEYMAP_FILE)_plain.c $(SRC)
+    SRC := $(KEYMAP_FILE)_jordan.c $(SRC)
 endif
 
 
